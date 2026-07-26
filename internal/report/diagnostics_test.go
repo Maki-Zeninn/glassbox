@@ -48,12 +48,8 @@ func TestDiagnosticReport_WithSourceMapping_IncludesLocation(t *testing.T) {
 		Operation:  "invoke",
 		ContractID: "CTEST",
 		Error:      "panic: index out of bounds",
-		SourceRef: &trace.SourceRef{
-			File:     "src/contract.rs",
-			Line:     42,
-			Column:   10,
-			Function: "transfer",
-		},
+		SourceFile: "src/contract.rs",
+		SourceLine: 42,
 	})
 
 	r := NewDiagnosticReport(tr)

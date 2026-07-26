@@ -4,10 +4,8 @@
 package trace
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/abi"
@@ -293,138 +291,6 @@ func (t *ExecutionTrace) GetNavigationInfo() map[string]interface{} {
 // ToJSON serializes the trace to JSON
 func (t *ExecutionTrace) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(t, "", "  ")
-}
-
-// ExportJSON returns a deterministic, schema-versioned JSON export of the trace.
-// Maps are converted to sorted key/value arrays and timestamps are normalised
-// to second precision to reduce non-determinism across runs.
-func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time) ([]byte, error) {
-	type kv struct {
-		Key   string      `json:"key"`
-		Value interface{} `json:"value"`
-	}
-
-	type stateExport struct {
-		Step             int                    `json:"step"`
-		Timestamp        string                 `json:"timestamp"`
-		Operation        string                 `json:"operation"`
-		EventType        string                 `json:"event_type,omitempty"`
-		ContractID       string                 `json:"contract_id,omitempty"`
-		Function         string                 `json:"function,omitempty"`
-		ContractMetadata *abi.ContractMetadata  `json:"contract_metadata,omitempty"`
-		Arguments        []interface{}          `json:"arguments,omitempty"`
-		RawArguments     []string               `json:"raw_arguments,omitempty"`
-		ReturnValue      interface{}            `json:"return_value,omitempty"`
-		RawReturnValue   string                 `json:"raw_return_value,omitempty"`
-		Error            string                 `json:"error,omitempty"`
-		HostState        []kv                   `json:"host_state,omitempty"`
-		Memory           []kv                   `json:"memory,omitempty"`
-		WasmInstruction  string                 `json:"wasm_instruction,omitempty"`
-		SourceFile       string                 `json:"source_file,omitempty"`
-		SourceLine       int                    `json:"source_line,omitempty"`
-		GitHubLink       string                 `json:"github_link,omitempty"`
-		Cost             *CostAnnotation        `json:"cost,omitempty"`
-	}
-
-	type snapshotExport struct {
-		Step      int    `json:"step"`
-		Timestamp string `json:"timestamp"`
-		CallStack []string `json:"call_stack"`
-		HostState []kv  `json:"host_state,omitempty"`
-		Memory    []kv  `json:"memory,omitempty"`
-	}
-
-	// Helper to convert a map to sorted kv slice
-	toKVS := func(m map[string]interface{}) []kv {
-		if m == nil {
-			return nil
-		}
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		out := make([]kv, 0, len(keys))
-		for _, k := range keys {
-			out = append(out, kv{Key: k, Value: m[k]})
-		}
-		return out
-	}
-
-	// normalise timestamp helper
-	norm := func(ti time.Time) string {
-		if ti.IsZero() {
-			return ""
-		}
-		return ti.UTC().Truncate(time.Second).Format(time.RFC3339)
-	}
-
-	// build export object
-	var states []stateExport
-	for _, s := range t.States {
-		states = append(states, stateExport{
-			Step:              s.Step,
-			Timestamp:         norm(s.Timestamp),
-			Operation:         s.Operation,
-			EventType:         s.EventType,
-			ContractID:        s.ContractID,
-			Function:          s.Function,
-			ContractMetadata:  s.ContractMetadata,
-			Arguments:         s.Arguments,
-			RawArguments:      s.RawArguments,
-			ReturnValue:       s.ReturnValue,
-			RawReturnValue:    s.RawReturnValue,
-			Error:             s.Error,
-			HostState:         toKVS(s.HostState),
-			Memory:            toKVS(s.Memory),
-			WasmInstruction:   s.WasmInstruction,
-			SourceFile:        s.SourceFile,
-			SourceLine:        s.SourceLine,
-			GitHubLink:        s.GitHubLink,
-			Cost:              s.Cost,
-		})
-	}
-
-	var snaps []snapshotExport
-	for _, sp := range t.Snapshots {
-		snaps = append(snaps, snapshotExport{
-			Step: sp.Step,
-			Timestamp: norm(sp.Timestamp),
-			CallStack: sp.CallStack,
-			HostState: toKVS(sp.HostState),
-			Memory: toKVS(sp.Memory),
-		})
-	}
-
-	// fingerprint transaction hash to avoid exporting raw identifiers
-	h := sha256.Sum256([]byte(t.TransactionHash))
-	fingerprint := fmt.Sprintf("sha256:%x", h)[:32]
-
-	gen := generatedAt
-	if gen.IsZero() {
-		gen = time.Now()
-	}
-
-	decodedEvents := DecodeDiagnosticEventsWithSchemas(toLocalDiagnosticEvents(t.DiagnosticEvents), nil)
-
-	exportObj := map[string]interface{}{
-		"schema_version": schemaVersion,
-		"generated_at": gen.UTC().Truncate(time.Second).Format(time.RFC3339),
-		"trace": map[string]interface{}{
-			"transaction_hash":  fingerprint,
-			"start_time":        norm(t.StartTime),
-			"end_time":          norm(t.EndTime),
-			"states":            states,
-			"snapshots":         snaps,
-			"diagnostic_events": t.DiagnosticEvents,
-			"decoded_events":    decodedEvents,
-			"annotations":       t.Annotations,
-			"subcall_graph":     exportSubcallGraph(t.SubcallGraph()),
-		},
-	}
-
-	// Use MarshalIndent for stable whitespace; maps inside are ordered via slices above.
-	return json.MarshalIndent(exportObj, "", "  ")
 }
 
 // FromJSON deserializes the trace from JSON

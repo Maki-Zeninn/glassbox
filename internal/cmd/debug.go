@@ -946,715 +946,737 @@ Local WASM Replay Mode:
 			sessionErr := func() error {
 				// Fetch transaction details
 				if watchFlag {
-			spinner := watch.NewSpinner()
-			spinner.Start("Waiting for transaction to appear on-chain...")
-			watchCtx, cancelWatch := context.WithTimeout(ctx, time.Duration(watchTimeoutFlag)*time.Second)
-			defer cancelWatch()
+					spinner := watch.NewSpinner()
+					spinner.Start("Waiting for transaction to appear on-chain...")
+					watchCtx, cancelWatch := context.WithTimeout(ctx, time.Duration(watchTimeoutFlag)*time.Second)
+					defer cancelWatch()
 
-			statusCh, err := client.WatchTransaction(watchCtx, txHash)
-			if err != nil {
-				spinner.StopWithError("Failed to start transaction watch")
-				return errors.WrapSimulationLogicError(fmt.Sprintf("watch mode error: %v", err))
-			}
-
-			var finalStatus *rpc.TxStatus
-			for status := range statusCh {
-				if status.IsFinal() {
-					statusCopy := status
-					finalStatus = &statusCopy
-					break
-				}
-			}
-
-			if err := watchCtx.Err(); err != nil {
-				spinner.StopWithError("Transaction not found within timeout")
-				return errors.WrapTransactionNotFound(fmt.Errorf("not found after %d seconds", watchTimeoutFlag))
-			}
-
-			if finalStatus == nil {
-				spinner.StopWithError("Transaction watch ended unexpectedly")
-				return errors.WrapSimulationLogicError("watch mode ended before a final transaction status was received")
-			}
-
-			spinner.StopWithMessage(fmt.Sprintf("Transaction reached %s. Starting debug...", strings.ToLower(finalStatus.Status)))
-		}
-
-		var resp *rpc.TransactionResponse
-		var localInputNetwork string
-		if localEnvelopeMode {
-			envelopeXdr, resultMetaXdr, fileNetwork, err := loadTransactionEnvelopeInput(xdrFileFlag, jsonFileFlag, resultMetaFileFlag)
-			if err != nil {
-				return err
-			}
-			resp = &rpc.TransactionResponse{EnvelopeXdr: envelopeXdr, ResultMetaXdr: resultMetaXdr}
-			localInputNetwork = fileNetwork
-			if localInputNetwork != "" && !cmd.Flags().Changed("network") {
-				networkFlag = localInputNetwork
-			}
-			fmt.Printf("Loaded local transaction envelope from %s\n", func() string {
-				if xdrFileFlag != "" {
-					return xdrFileFlag
-				}
-				return jsonFileFlag
-			}())
-			fmt.Printf("Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
-		} else {
-			fmt.Printf("Fetching transaction: %s\n", txHash)
-			_t0 := time.Now()
-			doneRPC := diagCollector.Start(diagnostics.PhaseRPCFetch)
-			resp, err = client.GetTransaction(ctx, txHash)
-			if showMetricsFlag {
-				perfCollector.RecordRPC("getTransaction", time.Since(_t0), err != nil)
-			}
-			doneRPC(err)
-			if err != nil {
-				return errors.WrapRPCConnectionFailed(err)
-			}
-
-			fmt.Printf("Transaction fetched successfully. Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
-			// Show which provider succeeded when the pool attempted failover.
-			if diag := client.PoolDiagnostics(); len(diag.Attempts) > 1 {
-				fmt.Printf("Provider failover occurred — succeeded via: %s\n", diag.SucceededURL)
-			}
-		}
-		keys, err := extractLedgerKeys(resp.ResultMetaXdr)
-		if err != nil {
-			return errors.WrapUnmarshalFailed(err, "result meta")
-		}
-
-		// Load config to get MaxTraceDepth for decoder calls
-		cfg, _ := config.Load()
-		maxDepth := 50
-		if cfg != nil {
-			maxDepth = cfg.MaxTraceDepth
-		}
-
-		// Initialize Simulator Runner
-		runner, err := simulator.NewRunnerWithMockTime("", tracingEnabled, mockTimeFlag)
-		if err != nil {
-			return errors.WrapSimulatorNotFound(err.Error())
-		}
-		// Ensure the child simulator process is killed on Ctrl-C or any early
-		// return from this function.  registerRunnerCloseHook wires into the
-		// shutdown.Coordinator so the process group is reaped within the
-		// shutdownTimeout budget even when the signal fires while runner.Run is
-		// blocked waiting for the subprocess.
-		defer runner.Close()
-		registerRunnerCloseHook("debug-simulator", runner)
-
-		// Determine timestamps to simulate
-		timestamps := []int64{TimestampFlag}
-		if WindowFlag > 0 && TimestampFlag > 0 {
-			// Simulate 5 steps across the window
-			step := WindowFlag / 4
-			for i := 1; i <= 4; i++ {
-				timestamps = append(timestamps, TimestampFlag+int64(i)*step)
-			}
-		}
-
-		overrideEntries, err := loadMockLedgerOverrides()
-		if err != nil {
-			return err
-		}
-
-		var lastSimResp *simulator.SimulationResponse
-		useLiveLedger := liveReplayFlag
-
-		// Collected per-timestamp states written to disk when --save-snapshots is set.
-		type snapshotEntry struct {
-			ts      int64
-			entries map[string]string
-		}
-		var collectedEntries []snapshotEntry
-
-		for _, ts := range timestamps {
-			if len(timestamps) > 1 {
-				fmt.Printf("\n--- Simulating at Timestamp: %d ---\n", ts)
-			}
-
-			var simResp *simulator.SimulationResponse
-			var ledgerEntries map[string]string
-
-			if compareNetworkFlag == "" {
-				// Single Network Run
-				if snapshotFlag != "" {
-					snap, driftWarn, loadErr := snapshot.LoadWithDiagnostics(snapshotFlag)
-					if loadErr != nil {
-						return errors.WrapValidationError(fmt.Sprintf("failed to load snapshot: %v", loadErr))
+					statusCh, err := client.WatchTransaction(watchCtx, txHash)
+					if err != nil {
+						spinner.StopWithError("Failed to start transaction watch")
+						return errors.WrapSimulationLogicError(fmt.Sprintf("watch mode error: %v", err))
 					}
-					// Surface drift as a prominent warning — the user should be
-					// aware that the ledger state may not match what was originally
-					// captured.
-					if driftWarn != nil {
-						fmt.Fprintf(os.Stderr, "\nWarning: %s\n\n", driftWarn.Error())
-					}
-					// Validate the snapshot identity and freshness before replay.
-					currentParams := map[string]string{
-						"network": networkFlag,
-						"tx":      txHash,
-					}
-					currentSourceHash := ""
-					if wasmPath != "" {
-						if wasmBytes, rerr := os.ReadFile(wasmPath); rerr == nil {
-							currentSourceHash = snapshot.HashWasmSource(wasmBytes)
+
+					var finalStatus *rpc.TxStatus
+					for status := range statusCh {
+						if status.IsFinal() {
+							statusCopy := status
+							finalStatus = &statusCopy
+							break
 						}
 					}
-					// We load the persisted form for identity/staleness checks.
-					// If the file is a plain ledger-state JSON (not a PersistedSnapshot),
-					// LoadPersisted will fail gracefully and we skip the identity checks.
-					if ps, psErr := snapshot.LoadPersisted(snapshotFlag); psErr == nil {
-						if valErr := snapshot.ValidateSnapshotBeforeReplay(
-							ps, txHash, networkFlag, currentParams, currentSourceHash,
-						); valErr != nil {
-							return errors.WrapValidationError(fmt.Sprintf(
-								"snapshot failed pre-replay validation: %v\n"+
-									"Use 'glassbox snapshot load --path %s' to inspect the snapshot details",
-								valErr, snapshotFlag))
+
+					if err := watchCtx.Err(); err != nil {
+						spinner.StopWithError("Transaction not found within timeout")
+						return errors.WrapTransactionNotFound(fmt.Errorf("not found after %d seconds", watchTimeoutFlag))
+					}
+
+					if finalStatus == nil {
+						spinner.StopWithError("Transaction watch ended unexpectedly")
+						return errors.WrapSimulationLogicError("watch mode ended before a final transaction status was received")
+					}
+
+					spinner.StopWithMessage(fmt.Sprintf("Transaction reached %s. Starting debug...", strings.ToLower(finalStatus.Status)))
+				}
+
+				var resp *rpc.TransactionResponse
+				var localInputNetwork string
+				if localEnvelopeMode {
+					envelopeXdr, resultMetaXdr, fileNetwork, err := loadTransactionEnvelopeInput(xdrFileFlag, jsonFileFlag, resultMetaFileFlag)
+					if err != nil {
+						return err
+					}
+					resp = &rpc.TransactionResponse{EnvelopeXdr: envelopeXdr, ResultMetaXdr: resultMetaXdr}
+					localInputNetwork = fileNetwork
+					if localInputNetwork != "" && !cmd.Flags().Changed("network") {
+						networkFlag = localInputNetwork
+					}
+					fmt.Printf("Loaded local transaction envelope from %s\n", func() string {
+						if xdrFileFlag != "" {
+							return xdrFileFlag
 						}
+						return jsonFileFlag
+					}())
+					fmt.Printf("Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
+				} else {
+					fmt.Printf("Fetching transaction: %s\n", txHash)
+					_t0 := time.Now()
+					doneRPC := diagCollector.Start(diagnostics.PhaseRPCFetch)
+					resp, err = client.GetTransaction(ctx, txHash)
+					if showMetricsFlag {
+						perfCollector.RecordRPC("getTransaction", time.Since(_t0), err != nil)
 					}
-					ledgerEntries = snap.ToMap()
-					fmt.Printf("Loaded %d ledger entries from snapshot\n", len(ledgerEntries))
-				} else if useLiveLedger {
-					if localEnvelopeMode {
-						return errors.WrapValidationError("--live/--latest-ledger cannot be used with local envelope input")
-					}
-					fmt.Println("Using latest validated ledger state for live replay...")
-					ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
+					doneRPC(err)
 					if err != nil {
 						return errors.WrapRPCConnectionFailed(err)
 					}
-				} else {
-					// Try to extract from metadata first, fall back to fetching
-					ledgerEntries, err = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
-					if err != nil {
-						logger.Logger.Warn("Failed to extract ledger entries from metadata")
-						if localEnvelopeMode {
-							logger.Logger.Info("Offline local envelope mode: skipping network ledger fetch")
-							ledgerEntries = map[string]string{}
-						} else {
-							logger.Logger.Warn("Failed to extract ledger entries from metadata, fetching from network", "error", err)
+
+					fmt.Printf("Transaction fetched successfully. Envelope size: %d bytes\n", len(resp.EnvelopeXdr))
+					// Show which provider succeeded when the pool attempted failover.
+					if diag := client.PoolDiagnostics(); len(diag.Attempts) > 1 {
+						fmt.Printf("Provider failover occurred — succeeded via: %s\n", diag.SucceededURL)
+					}
+				}
+				keys, err := extractLedgerKeys(resp.ResultMetaXdr)
+				if err != nil {
+					return errors.WrapUnmarshalFailed(err, "result meta")
+				}
+
+				// Load config to get MaxTraceDepth for decoder calls
+				cfg, _ := config.Load()
+				maxDepth := 50
+				if cfg != nil {
+					maxDepth = cfg.MaxTraceDepth
+				}
+
+				// Initialize Simulator Runner
+				runner, err := simulator.NewRunnerWithMockTime("", tracingEnabled, mockTimeFlag)
+				if err != nil {
+					return errors.WrapSimulatorNotFound(err.Error())
+				}
+				// Ensure the child simulator process is killed on Ctrl-C or any early
+				// return from this function.  registerRunnerCloseHook wires into the
+				// shutdown.Coordinator so the process group is reaped within the
+				// shutdownTimeout budget even when the signal fires while runner.Run is
+				// blocked waiting for the subprocess.
+				defer runner.Close()
+				registerRunnerCloseHook("debug-simulator", runner)
+
+				// Determine timestamps to simulate
+				timestamps := []int64{TimestampFlag}
+				if WindowFlag > 0 && TimestampFlag > 0 {
+					// Simulate 5 steps across the window
+					step := WindowFlag / 4
+					for i := 1; i <= 4; i++ {
+						timestamps = append(timestamps, TimestampFlag+int64(i)*step)
+					}
+				}
+
+				overrideEntries, err := loadMockLedgerOverrides()
+				if err != nil {
+					return err
+				}
+
+				var lastSimResp *simulator.SimulationResponse
+				useLiveLedger := liveReplayFlag
+
+				// Collected per-timestamp states written to disk when --save-snapshots is set.
+				type snapshotEntry struct {
+					ts      int64
+					entries map[string]string
+				}
+				var collectedEntries []snapshotEntry
+
+				for _, ts := range timestamps {
+					if len(timestamps) > 1 {
+						fmt.Printf("\n--- Simulating at Timestamp: %d ---\n", ts)
+					}
+
+					var simResp *simulator.SimulationResponse
+					var ledgerEntries map[string]string
+
+					if compareNetworkFlag == "" {
+						// Single Network Run
+						if snapshotFlag != "" {
+							snap, driftWarn, loadErr := snapshot.LoadWithDiagnostics(snapshotFlag)
+							if loadErr != nil {
+								return errors.WrapValidationError(fmt.Sprintf("failed to load snapshot: %v", loadErr))
+							}
+							// Surface drift as a prominent warning — the user should be
+							// aware that the ledger state may not match what was originally
+							// captured.
+							if driftWarn != nil {
+								fmt.Fprintf(os.Stderr, "\nWarning: %s\n\n", driftWarn.Error())
+							}
+							// Validate the snapshot identity and freshness before replay.
+							currentParams := map[string]string{
+								"network": networkFlag,
+								"tx":      txHash,
+							}
+							currentSourceHash := ""
+							if wasmPath != "" {
+								if wasmBytes, rerr := os.ReadFile(wasmPath); rerr == nil {
+									currentSourceHash = snapshot.HashWasmSource(wasmBytes)
+								}
+							}
+							// We load the persisted form for identity/staleness checks.
+							// If the file is a plain ledger-state JSON (not a PersistedSnapshot),
+							// LoadPersisted will fail gracefully and we skip the identity checks.
+							if ps, psErr := snapshot.LoadPersisted(snapshotFlag); psErr == nil {
+								if valErr := snapshot.ValidateSnapshotBeforeReplay(
+									ps, txHash, networkFlag, currentParams, currentSourceHash,
+								); valErr != nil {
+									return errors.WrapValidationError(fmt.Sprintf(
+										"snapshot failed pre-replay validation: %v\n"+
+											"Use 'glassbox snapshot load --path %s' to inspect the snapshot details",
+										valErr, snapshotFlag))
+								}
+							}
+							ledgerEntries = snap.ToMap()
+							fmt.Printf("Loaded %d ledger entries from snapshot\n", len(ledgerEntries))
+						} else if useLiveLedger {
+							if localEnvelopeMode {
+								return errors.WrapValidationError("--live/--latest-ledger cannot be used with local envelope input")
+							}
+							fmt.Println("Using latest validated ledger state for live replay...")
 							ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
 							if err != nil {
 								return errors.WrapRPCConnectionFailed(err)
 							}
+						} else {
+							// Try to extract from metadata first, fall back to fetching
+							ledgerEntries, err = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
+							if err != nil {
+								logger.Logger.Warn("Failed to extract ledger entries from metadata")
+								if localEnvelopeMode {
+									logger.Logger.Info("Offline local envelope mode: skipping network ledger fetch")
+									ledgerEntries = map[string]string{}
+								} else {
+									logger.Logger.Warn("Failed to extract ledger entries from metadata, fetching from network", "error", err)
+									ledgerEntries, err = client.GetLedgerEntries(ctx, keys)
+									if err != nil {
+										return errors.WrapRPCConnectionFailed(err)
+									}
+								}
+							} else {
+								logger.Logger.Info("Extracted ledger entries for simulation", "count", len(ledgerEntries))
+							}
+						}
+
+						if len(overrideEntries) > 0 {
+							ledgerEntries = simulator.MergeLedgerOverrides(ledgerEntries, overrideEntries)
+							fmt.Printf("Applied %d mock ledger override entries\n", len(overrideEntries))
+						}
+
+						if saveSnapshotsFlag != "" {
+							collectedEntries = append(collectedEntries, snapshotEntry{ts: ts, entries: ledgerEntries})
+						}
+
+						fmt.Printf("Running simulation on %s...\n", networkFlag)
+						simReq := &simulator.SimulationRequest{
+							EnvelopeXdr:     resp.EnvelopeXdr,
+							ResultMetaXdr:   resp.ResultMetaXdr,
+							LedgerEntries:   ledgerEntries,
+							Timestamp:       ts,
+							ProtocolVersion: nil,
+							EnableSnapshots: snapshotsFlag,
+						}
+
+						// Apply protocol version override if specified
+						if protocolVersionFlag > 0 {
+							if err := simulator.Validate(protocolVersionFlag); err != nil {
+								return fmt.Errorf("invalid protocol version %d: %w", protocolVersionFlag, err)
+							}
+							simReq.ProtocolVersion = &protocolVersionFlag
+							fmt.Printf("Using protocol version override: %d\n", protocolVersionFlag)
+						}
+						applyDebugSimulationOptions(simReq)
+						applySimulationFeeMocks(simReq)
+
+						if showMetricsFlag {
+							perfCollector.StartSim()
+						}
+						doneSim := diagCollector.Start(diagnostics.PhaseSimulator)
+						simResp, err = runner.Run(ctx, simReq)
+						if showMetricsFlag {
+							perfCollector.StopSim()
+						}
+						doneSim(err)
+						if err != nil {
+							return errors.WrapSimulationFailed(err, "")
+						}
+						printSimulationResult(networkFlag, simResp)
+						// Budget usage is already rendered inside printSimulationResult; skip duplicate block.
+
+						// Surface a diagnostic when the simulator returned no trace events — this
+						// is actionable: users should check their simulator version or the
+						// transaction envelope.
+						if simResp != nil && len(simResp.DiagnosticEvents) == 0 && len(simResp.Events) == 0 {
+							fmt.Fprintf(os.Stderr,
+								"\nNote: the simulator did not produce any diagnostic events for this transaction.\n"+
+									"Trace accuracy may be limited. Check that:\n"+
+									"  • The simulator binary is up-to-date (run 'glassbox doctor --fix')\n"+
+									"  • The transaction includes InvokeHostFunction operations\n"+
+									"  • The transaction envelope is valid and not malformed\n"+
+									"  • The --snapshots flag is set if per-step snapshot data is needed\n",
+							)
+						}
+
+						// Render colored before/after ledger state diff.
+						if postState, diffErr := rpc.ExtractPostStateLedgerEntries(resp.ResultMetaXdr); diffErr == nil {
+							visualizer.RenderLedgerStateDiff(ledgerEntries, postState, false)
+						}
+
+						// Fetch contract bytecode on demand for any contract calls in the trace; cache via RPC client
+						if !localEnvelopeMode && client != nil && simResp != nil && len(simResp.DiagnosticEvents) > 0 {
+							contractIDs := collectContractIDsFromDiagnosticEvents(simResp.DiagnosticEvents)
+							if len(contractIDs) > 0 {
+								_, _ = rpc.FetchBytecodeForTraceContractCalls(ctx, client, contractIDs, nil)
+							}
 						}
 					} else {
-						logger.Logger.Info("Extracted ledger entries for simulation", "count", len(ledgerEntries))
+						// Comparison Run
+						var wg sync.WaitGroup
+						var primaryResult, compareResult *simulator.SimulationResponse
+						var primaryErr, compareErr error
+
+						wg.Add(2)
+						go func() {
+							defer wg.Done()
+							var entries map[string]string
+							var extractErr error
+							if useLiveLedger {
+								entries, extractErr = client.GetLedgerEntries(ctx, keys)
+								if extractErr != nil {
+									primaryErr = extractErr
+									return
+								}
+							} else {
+								entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
+								if extractErr != nil {
+									entries, extractErr = client.GetLedgerEntries(ctx, keys)
+									if extractErr != nil {
+										primaryErr = extractErr
+										return
+									}
+								}
+							}
+							if len(overrideEntries) > 0 {
+								entries = simulator.MergeLedgerOverrides(entries, overrideEntries)
+								fmt.Printf("Applied %d mock ledger override entries to primary comparison\n", len(overrideEntries))
+							}
+							primaryReq := &simulator.SimulationRequest{
+								EnvelopeXdr:     resp.EnvelopeXdr,
+								ResultMetaXdr:   resp.ResultMetaXdr,
+								LedgerEntries:   entries,
+								Timestamp:       ts,
+								EnableSnapshots: snapshotsFlag,
+							}
+							applyDebugSimulationOptions(primaryReq)
+							applySimulationFeeMocks(primaryReq)
+							primaryResult, primaryErr = runner.Run(ctx, primaryReq)
+						}()
+
+						go func() {
+							defer wg.Done()
+							compareOpts := []rpc.ClientOption{
+								rpc.WithNetwork(rpc.Network(compareNetworkFlag)),
+								rpc.WithToken(rpcTokenFlag),
+							}
+							compareClient, clientErr := rpc.NewClient(compareOpts...)
+							if clientErr != nil {
+								compareErr = errors.WrapValidationError(fmt.Sprintf("failed to create compare client: %v", clientErr))
+								return
+							}
+							if noCacheFlag {
+								compareClient.CacheEnabled = false
+							}
+
+							compareResp, txErr := compareClient.GetTransaction(ctx, txHash)
+							if txErr != nil {
+								compareErr = errors.WrapRPCConnectionFailed(txErr)
+								return
+							}
+
+							var entries map[string]string
+							var extractErr error
+							if useLiveLedger {
+								entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
+								if extractErr != nil {
+									compareErr = extractErr
+									return
+								}
+							} else {
+								entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
+								if extractErr != nil {
+									entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
+									if extractErr != nil {
+										compareErr = extractErr
+										return
+									}
+								}
+							}
+
+							if len(overrideEntries) > 0 {
+								entries = simulator.MergeLedgerOverrides(entries, overrideEntries)
+								fmt.Printf("Applied %d mock ledger override entries to compare comparison\n", len(overrideEntries))
+							}
+
+							compareReq := &simulator.SimulationRequest{
+								EnvelopeXdr:     compareResp.EnvelopeXdr,
+								ResultMetaXdr:   compareResp.ResultMetaXdr,
+								LedgerEntries:   entries,
+								Timestamp:       ts,
+								EnableSnapshots: snapshotsFlag,
+							}
+							applyDebugSimulationOptions(compareReq)
+							applySimulationFeeMocks(compareReq)
+							compareResult, compareErr = runner.Run(ctx, compareReq)
+						}()
+
+						wg.Wait()
+						if primaryErr != nil {
+							return errors.WrapRPCConnectionFailed(primaryErr)
+						}
+						if compareErr != nil {
+							return errors.WrapRPCConnectionFailed(compareErr)
+						}
+						// Fetch contract bytecode on demand for contract calls in the trace; cache via RPC client
+						if client != nil && primaryResult != nil && len(primaryResult.DiagnosticEvents) > 0 {
+							contractIDs := collectContractIDsFromDiagnosticEvents(primaryResult.DiagnosticEvents)
+							if len(contractIDs) > 0 {
+								_, _ = rpc.FetchBytecodeForTraceContractCalls(ctx, client, contractIDs, nil)
+							}
+						}
+
+						simResp = primaryResult // Use primary for further analysis
+						printSimulationResult(networkFlag, primaryResult)
+						printSimulationResult(compareNetworkFlag, compareResult)
+						diffResults(primaryResult, compareResult, networkFlag, compareNetworkFlag)
+					}
+					lastSimResp = simResp
+
+					if exportSVGFlag != "" && simResp != nil && len(simResp.DiagnosticEvents) > 0 {
+						callTree, err := decoder.DecodeDiagnosticEvents(simResp.DiagnosticEvents, maxDepth)
+						if err != nil {
+							fmt.Printf("%s Error building call tree for SVG: %v\n", visualizer.Symbol("error"), err)
+						} else {
+							svg := visualizer.GenerateCallGraphSVG(callTree, maxDepth)
+							err := os.WriteFile(exportSVGFlag, []byte(svg), 0644)
+							if err != nil {
+								fmt.Printf("%s Error saving SVG: %v\n", visualizer.Symbol("error"), err)
+							} else {
+								fmt.Printf("%s Call graph exported to: %s\n", visualizer.Symbol("success"), exportSVGFlag)
+							}
+						}
 					}
 				}
 
-				if len(overrideEntries) > 0 {
-					ledgerEntries = simulator.MergeLedgerOverrides(ledgerEntries, overrideEntries)
-					fmt.Printf("Applied %d mock ledger override entries\n", len(overrideEntries))
+				if lastSimResp == nil {
+					return errors.WrapSimulationLogicError("no simulation results generated")
 				}
 
-				if saveSnapshotsFlag != "" {
-					collectedEntries = append(collectedEntries, snapshotEntry{ts: ts, entries: ledgerEntries})
+				// Persist snapshot registry to disk when --save-snapshots is set.
+				if saveSnapshotsFlag != "" && len(collectedEntries) > 0 {
+					reg := replay.New(version.Version, txHash, networkFlag, resp.EnvelopeXdr, resp.ResultMetaXdr)
+					for _, ce := range collectedEntries {
+						reg.Add(ce.ts, snapshot.FromMap(ce.entries))
+					}
+					if err := reg.SaveToFile(saveSnapshotsFlag); err != nil {
+						fmt.Printf("Warning: failed to save snapshot registry: %v\n", err)
+					} else {
+						fmt.Printf("Snapshot registry saved: %s (%d entr%s)\n",
+							saveSnapshotsFlag, len(reg.Entries), pluralIes(len(reg.Entries)))
+					}
 				}
 
-				fmt.Printf("Running simulation on %s...\n", networkFlag)
+				// Analysis: Error Suggestions (Heuristic-based)
+				if len(lastSimResp.Events) > 0 {
+					suggestionEngine := decoder.NewSuggestionEngine()
+
+					// Decode events for analysis
+					doneDecode := diagCollector.Start(diagnostics.PhaseDecode)
+					callTree, err := decoder.DecodeEvents(lastSimResp.Events, maxDepth)
+					var decodeErr error
+					if err != nil {
+						decodeErr = err
+					}
+					doneDecode(decodeErr)
+					if err == nil && callTree != nil {
+						suggestions := suggestionEngine.AnalyzeCallTree(callTree)
+						if len(suggestions) > 0 {
+							fmt.Print(decoder.FormatSuggestions(suggestions))
+						}
+					}
+				}
+
+				// Analysis: Security
+				fmt.Printf("\n=== Security Analysis ===\n")
+				secDetector := security.NewDetector()
+				findings := secDetector.Analyze(resp.EnvelopeXdr, resp.ResultMetaXdr, lastSimResp.Events, lastSimResp.Logs)
+				if contractSourceFlag != "" {
+					doneSrcMap := diagCollector.Start(diagnostics.PhaseSourceMap)
+					sourceFindings, scanErr := secDetector.ScanSourcePath(contractSourceFlag, nil)
+					doneSrcMap(scanErr)
+					if scanErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: source vulnerability scan failed: %v\n", scanErr)
+					} else {
+						findings = append(findings, sourceFindings...)
+					}
+				}
+				printSecurityFindings(findings)
+
+				// Analysis: Token Flows
+				hasTokenFlows := false
+				if report, err := tokenflow.BuildReport(resp.EnvelopeXdr, resp.ResultMetaXdr); err == nil && len(report.Agg) > 0 {
+					hasTokenFlows = true
+					fmt.Printf("\nToken Flow Summary:\n")
+					for _, line := range report.SummaryLines() {
+						fmt.Printf("  %s\n", line)
+					}
+					fmt.Printf("\nToken Flow Chart (Mermaid):\n")
+					fmt.Println(report.MermaidFlowchart())
+				}
+
+				// Persist viewer state so the next debug of this transaction restores context.
+				if uiStore != nil {
+					_ = uiStore.SaveSectionState(ctx, txHash, collectVisibleSections(lastSimResp, findings, hasTokenFlows))
+				}
+
+				// Session Management
 				simReq := &simulator.SimulationRequest{
 					EnvelopeXdr:     resp.EnvelopeXdr,
 					ResultMetaXdr:   resp.ResultMetaXdr,
-					LedgerEntries:   ledgerEntries,
-					Timestamp:       ts,
-					ProtocolVersion: nil,
 					EnableSnapshots: snapshotsFlag,
-				}
-
-				// Apply protocol version override if specified
-				if protocolVersionFlag > 0 {
-					if err := simulator.Validate(protocolVersionFlag); err != nil {
-						return fmt.Errorf("invalid protocol version %d: %w", protocolVersionFlag, err)
-					}
-					simReq.ProtocolVersion = &protocolVersionFlag
-					fmt.Printf("Using protocol version override: %d\n", protocolVersionFlag)
 				}
 				applyDebugSimulationOptions(simReq)
 				applySimulationFeeMocks(simReq)
-
-				if showMetricsFlag {
-					perfCollector.StartSim()
-				}
-				doneSim := diagCollector.Start(diagnostics.PhaseSimulator)
-				simResp, err = runner.Run(ctx, simReq)
-				if showMetricsFlag {
-					perfCollector.StopSim()
-				}
-				doneSim(err)
+				simReqJSON, err := json.Marshal(simReq)
 				if err != nil {
-					return errors.WrapSimulationFailed(err, "")
+					fmt.Printf("Warning: failed to serialize simulation data: %v\n", err)
 				}
-				printSimulationResult(networkFlag, simResp)
-				// Budget usage is already rendered inside printSimulationResult; skip duplicate block.
+				simRespJSON, err := json.Marshal(lastSimResp)
+				if err != nil {
+					fmt.Printf("Warning: failed to serialize simulation results: %v\n", err)
+				}
 
-				// Surface a diagnostic when the simulator returned no trace events — this
-				// is actionable: users should check their simulator version or the
-				// transaction envelope.
-				if simResp != nil && len(simResp.DiagnosticEvents) == 0 && len(simResp.Events) == 0 {
-					fmt.Fprintf(os.Stderr,
-						"\nNote: the simulator did not produce any diagnostic events for this transaction.\n"+
-							"Trace accuracy may be limited. Check that:\n"+
-							"  • The simulator binary is up-to-date (run 'glassbox doctor --fix')\n"+
-							"  • The transaction includes InvokeHostFunction operations\n"+
-							"  • The transaction envelope is valid and not malformed\n"+
-							"  • The --snapshots flag is set if per-step snapshot data is needed\n",
+				sessionData := &session.Data{
+					ID:              session.GenerateID(txHash),
+					CreatedAt:       time.Now(),
+					LastAccessAt:    time.Now(),
+					Status:          "active",
+					Network:         networkFlag,
+					HorizonURL:      horizonURL,
+					TxHash:          txHash,
+					EnvelopeXdr:     resp.EnvelopeXdr,
+					ResultXdr:       resp.ResultXdr,
+					ResultMetaXdr:   resp.ResultMetaXdr,
+					PinnedEndpoint:  pinEndpointFlag,
+					SimRequestJSON:  string(simReqJSON),
+					SimResponseJSON: string(simRespJSON),
+					ErstVersion:     version.Version,
+					SchemaVersion:   session.SchemaVersion,
+					EnvFingerprint:  session.BuildEnvFingerprint(),
+				}
+				SetCurrentSession(sessionData)
+				fmt.Printf("\nSession created: %s\n", sessionData.ID)
+				fmt.Printf("Run 'Glassbox session save' to persist this session.\n")
+
+				// Publish signed audit trail to decentralised storage when requested.
+				if publishIPFSFlag || publishArweaveFlag {
+					if auditKeyFlag == "" {
+						return errors.WrapCliArgumentRequired("audit-key")
+					}
+					auditLog, auditErr := Generate(
+						txHash,
+						resp.EnvelopeXdr,
+						resp.ResultMetaXdr,
+						lastSimResp.Events,
+						lastSimResp.Logs,
+						auditKeyFlag,
+						nil,
 					)
-				}
+					if auditErr != nil {
+						return fmt.Errorf("failed to generate audit log: %w", auditErr)
+					}
+					auditBytes, auditErr := json.Marshal(auditLog)
+					if auditErr != nil {
+						return fmt.Errorf("failed to marshal audit log: %w", auditErr)
+					}
 
-				// Render colored before/after ledger state diff.
-				if postState, diffErr := rpc.ExtractPostStateLedgerEntries(resp.ResultMetaXdr); diffErr == nil {
-					visualizer.RenderLedgerStateDiff(ledgerEntries, postState, false)
-				}
+					pub := decenstorage.New(decenstorage.PublishConfig{
+						IPFSNode:       ipfsNodeFlag,
+						ArweaveGateway: arweaveGatewayFlag,
+						ArweaveWallet:  arweaveWalletFlag,
+					})
 
-				// Fetch contract bytecode on demand for any contract calls in the trace; cache via RPC client
-				if !localEnvelopeMode && client != nil && simResp != nil && len(simResp.DiagnosticEvents) > 0 {
-					contractIDs := collectContractIDsFromDiagnosticEvents(simResp.DiagnosticEvents)
-					if len(contractIDs) > 0 {
-						_, _ = rpc.FetchBytecodeForTraceContractCalls(ctx, client, contractIDs, nil)
+					fmt.Printf("\n=== Decentralised Storage ===\n")
+
+					if publishIPFSFlag {
+						result, ipfsErr := pub.PublishIPFS(ctx, auditBytes)
+						if ipfsErr != nil {
+							fmt.Printf("IPFS publish failed: %v\n", ipfsErr)
+						} else {
+							fmt.Printf("IPFS CID : %s\n", result.CID)
+							fmt.Printf("IPFS URL : %s\n", result.URL)
+						}
+					}
+
+					if publishArweaveFlag {
+						result, arErr := pub.PublishArweave(ctx, auditBytes)
+						if arErr != nil {
+							fmt.Printf("Arweave publish failed: %v\n", arErr)
+						} else {
+							fmt.Printf("Arweave TXID : %s\n", result.TXID)
+							fmt.Printf("Arweave URL  : %s\n", result.URL)
+						}
 					}
 				}
-			} else {
-				// Comparison Run
-				var wg sync.WaitGroup
-				var primaryResult, compareResult *simulator.SimulationResponse
-				var primaryErr, compareErr error
 
-				wg.Add(2)
-				go func() {
-					defer wg.Done()
-					var entries map[string]string
-					var extractErr error
-					if useLiveLedger {
-						entries, extractErr = client.GetLedgerEntries(ctx, keys)
-						if extractErr != nil {
-							primaryErr = extractErr
-							return
-						}
+				// ── Trace export ────────────────────────────────────────────────────────
+				// Build an ExecutionTrace from the last simulation's diagnostic events
+				// whenever trace output was requested (--generate-trace / --trace-output).
+				if (generateTrace || traceOutputFile != "") && lastSimResp != nil {
+					outPath := traceOutputFile
+					if outPath == "" {
+						// Default filename when only --generate-trace was supplied.
+						outPath = "trace-" + txHash[:min(8, len(txHash))] + ".json"
+					}
+					execTrace := trace.BuildExecutionTraceFromSimResponse(txHash, lastSimResp)
+					if len(execTrace.States) == 0 {
+						fmt.Fprintf(os.Stderr,
+							"Warning: trace export skipped — the simulator produced no diagnostic events for this transaction.\n"+
+								"  Ensure the simulator is up-to-date and the transaction includes InvokeHostFunction operations.\n"+
+								"  Run 'glassbox doctor --fix' to refresh the simulator binary.\n",
+						)
 					} else {
-						entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(resp.ResultMetaXdr)
-						if extractErr != nil {
-							entries, extractErr = client.GetLedgerEntries(ctx, keys)
-							if extractErr != nil {
-								primaryErr = extractErr
-								return
-							}
+						targetFmt := strings.ToLower(strings.TrimSpace(debugFormatFlag))
+						if targetFmt == "" || targetFmt == "text" || targetFmt == "json" {
+							// Default trace export format is JSON regardless of the display format.
+							targetFmt = "json"
 						}
-					}
-					if len(overrideEntries) > 0 {
-						entries = simulator.MergeLedgerOverrides(entries, overrideEntries)
-						fmt.Printf("Applied %d mock ledger override entries to primary comparison\n", len(overrideEntries))
-					}
-					primaryReq := &simulator.SimulationRequest{
-						EnvelopeXdr:     resp.EnvelopeXdr,
-						ResultMetaXdr:   resp.ResultMetaXdr,
-						LedgerEntries:   entries,
-						Timestamp:       ts,
-						EnableSnapshots: snapshotsFlag,
-					}
-					applyDebugSimulationOptions(primaryReq)
-					applySimulationFeeMocks(primaryReq)
-					primaryResult, primaryErr = runner.Run(ctx, primaryReq)
-				}()
+						fmt.Fprintf(os.Stderr, "Exporting %d-step trace as %s to %s...\n",
+							len(execTrace.States), targetFmt, outPath)
 
-				go func() {
-					defer wg.Done()
-					compareOpts := []rpc.ClientOption{
-						rpc.WithNetwork(rpc.Network(compareNetworkFlag)),
-						rpc.WithToken(rpcTokenFlag),
-					}
-					compareClient, clientErr := rpc.NewClient(compareOpts...)
-					if clientErr != nil {
-						compareErr = errors.WrapValidationError(fmt.Sprintf("failed to create compare client: %v", clientErr))
-						return
-					}
-					if noCacheFlag {
-						compareClient.CacheEnabled = false
-					}
-
-					compareResp, txErr := compareClient.GetTransaction(ctx, txHash)
-					if txErr != nil {
-						compareErr = errors.WrapRPCConnectionFailed(txErr)
-						return
-					}
-
-					var entries map[string]string
-					var extractErr error
-					if useLiveLedger {
-						entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
-						if extractErr != nil {
-							compareErr = extractErr
-							return
-						}
-					} else {
-						entries, extractErr = rpc.ExtractLedgerEntriesFromMeta(compareResp.ResultMetaXdr)
-						if extractErr != nil {
-							entries, extractErr = compareClient.GetLedgerEntries(ctx, keys)
-							if extractErr != nil {
-								compareErr = extractErr
-								return
-							}
-						}
-					}
-
-					if len(overrideEntries) > 0 {
-						entries = simulator.MergeLedgerOverrides(entries, overrideEntries)
-						fmt.Printf("Applied %d mock ledger override entries to compare comparison\n", len(overrideEntries))
-					}
-
-					compareReq := &simulator.SimulationRequest{
-						EnvelopeXdr:     compareResp.EnvelopeXdr,
-						ResultMetaXdr:   compareResp.ResultMetaXdr,
-						LedgerEntries:   entries,
-						Timestamp:       ts,
-						EnableSnapshots: snapshotsFlag,
-					}
-					applyDebugSimulationOptions(compareReq)
-					applySimulationFeeMocks(compareReq)
-					compareResult, compareErr = runner.Run(ctx, compareReq)
-				}()
-
-				wg.Wait()
-				if primaryErr != nil {
-					return errors.WrapRPCConnectionFailed(primaryErr)
-				}
-				if compareErr != nil {
-					return errors.WrapRPCConnectionFailed(compareErr)
-				}
-				// Fetch contract bytecode on demand for contract calls in the trace; cache via RPC client
-				if client != nil && primaryResult != nil && len(primaryResult.DiagnosticEvents) > 0 {
-					contractIDs := collectContractIDsFromDiagnosticEvents(primaryResult.DiagnosticEvents)
-					if len(contractIDs) > 0 {
-						_, _ = rpc.FetchBytecodeForTraceContractCalls(ctx, client, contractIDs, nil)
-					}
-				}
-
-				simResp = primaryResult // Use primary for further analysis
-				printSimulationResult(networkFlag, primaryResult)
-				printSimulationResult(compareNetworkFlag, compareResult)
-				diffResults(primaryResult, compareResult, networkFlag, compareNetworkFlag)
-			}
-			lastSimResp = simResp
-
-			if exportSVGFlag != "" && simResp != nil && len(simResp.DiagnosticEvents) > 0 {
-				callTree, err := decoder.DecodeDiagnosticEvents(simResp.DiagnosticEvents, maxDepth)
-				if err != nil {
-					fmt.Printf("%s Error building call tree for SVG: %v\n", visualizer.Symbol("error"), err)
-				} else {
-					svg := visualizer.GenerateCallGraphSVG(callTree, maxDepth)
-					err := os.WriteFile(exportSVGFlag, []byte(svg), 0644)
-					if err != nil {
-						fmt.Printf("%s Error saving SVG: %v\n", visualizer.Symbol("error"), err)
-					} else {
-						fmt.Printf("%s Call graph exported to: %s\n", visualizer.Symbol("success"), exportSVGFlag)
-					}
-				}
-			}
-		}
-
-		if lastSimResp == nil {
-			return errors.WrapSimulationLogicError("no simulation results generated")
-		}
-
-		// Persist snapshot registry to disk when --save-snapshots is set.
-		if saveSnapshotsFlag != "" && len(collectedEntries) > 0 {
-			reg := replay.New(version.Version, txHash, networkFlag, resp.EnvelopeXdr, resp.ResultMetaXdr)
-			for _, ce := range collectedEntries {
-				reg.Add(ce.ts, snapshot.FromMap(ce.entries))
-			}
-			if err := reg.SaveToFile(saveSnapshotsFlag); err != nil {
-				fmt.Printf("Warning: failed to save snapshot registry: %v\n", err)
-			} else {
-				fmt.Printf("Snapshot registry saved: %s (%d entr%s)\n",
-					saveSnapshotsFlag, len(reg.Entries), pluralIes(len(reg.Entries)))
-			}
-		}
-
-		// Analysis: Error Suggestions (Heuristic-based)
-		if len(lastSimResp.Events) > 0 {
-			suggestionEngine := decoder.NewSuggestionEngine()
-
-			// Decode events for analysis
-			doneDecode := diagCollector.Start(diagnostics.PhaseDecode)
-			callTree, err := decoder.DecodeEvents(lastSimResp.Events, maxDepth)
-			var decodeErr error
-			if err != nil {
-				decodeErr = err
-			}
-			doneDecode(decodeErr)
-			if err == nil && callTree != nil {
-				suggestions := suggestionEngine.AnalyzeCallTree(callTree)
-				if len(suggestions) > 0 {
-					fmt.Print(decoder.FormatSuggestions(suggestions))
-				}
-			}
-		}
-
-		// Analysis: Security
-		fmt.Printf("\n=== Security Analysis ===\n")
-		secDetector := security.NewDetector()
-		findings := secDetector.Analyze(resp.EnvelopeXdr, resp.ResultMetaXdr, lastSimResp.Events, lastSimResp.Logs)
-		if contractSourceFlag != "" {
-			doneSrcMap := diagCollector.Start(diagnostics.PhaseSourceMap)
-			sourceFindings, scanErr := secDetector.ScanSourcePath(contractSourceFlag, nil)
-			doneSrcMap(scanErr)
-			if scanErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: source vulnerability scan failed: %v\n", scanErr)
-			} else {
-				findings = append(findings, sourceFindings...)
-			}
-		}
-		printSecurityFindings(findings)
-
-		// Analysis: Token Flows
-		hasTokenFlows := false
-		if report, err := tokenflow.BuildReport(resp.EnvelopeXdr, resp.ResultMetaXdr); err == nil && len(report.Agg) > 0 {
-			hasTokenFlows = true
-			fmt.Printf("\nToken Flow Summary:\n")
-			for _, line := range report.SummaryLines() {
-				fmt.Printf("  %s\n", line)
-			}
-			fmt.Printf("\nToken Flow Chart (Mermaid):\n")
-			fmt.Println(report.MermaidFlowchart())
-		}
-
-		// Persist viewer state so the next debug of this transaction restores context.
-		if uiStore != nil {
-			_ = uiStore.SaveSectionState(ctx, txHash, collectVisibleSections(lastSimResp, findings, hasTokenFlows))
-		}
-
-		// Session Management
-		simReq := &simulator.SimulationRequest{
-			EnvelopeXdr:     resp.EnvelopeXdr,
-			ResultMetaXdr:   resp.ResultMetaXdr,
-			EnableSnapshots: snapshotsFlag,
-		}
-		applyDebugSimulationOptions(simReq)
-		applySimulationFeeMocks(simReq)
-		simReqJSON, err := json.Marshal(simReq)
-		if err != nil {
-			fmt.Printf("Warning: failed to serialize simulation data: %v\n", err)
-		}
-		simRespJSON, err := json.Marshal(lastSimResp)
-		if err != nil {
-			fmt.Printf("Warning: failed to serialize simulation results: %v\n", err)
-		}
-
-		sessionData := &session.Data{
-			ID:              session.GenerateID(txHash),
-			CreatedAt:       time.Now(),
-			LastAccessAt:    time.Now(),
-			Status:          "active",
-			Network:         networkFlag,
-			HorizonURL:      horizonURL,
-			TxHash:          txHash,
-			EnvelopeXdr:     resp.EnvelopeXdr,
-			ResultXdr:       resp.ResultXdr,
-			ResultMetaXdr:   resp.ResultMetaXdr,
-			PinnedEndpoint:  pinEndpointFlag,
-			SimRequestJSON:  string(simReqJSON),
-			SimResponseJSON: string(simRespJSON),
-			ErstVersion:     version.Version,
-			SchemaVersion:   session.SchemaVersion,
-			EnvFingerprint:  session.BuildEnvFingerprint(),
-		}
-		SetCurrentSession(sessionData)
-		fmt.Printf("\nSession created: %s\n", sessionData.ID)
-		fmt.Printf("Run 'Glassbox session save' to persist this session.\n")
-
-		// Publish signed audit trail to decentralised storage when requested.
-		if publishIPFSFlag || publishArweaveFlag {
-			if auditKeyFlag == "" {
-				return errors.WrapCliArgumentRequired("audit-key")
-			}
-			auditLog, auditErr := Generate(
-				txHash,
-				resp.EnvelopeXdr,
-				resp.ResultMetaXdr,
-				lastSimResp.Events,
-				lastSimResp.Logs,
-				auditKeyFlag,
-				nil,
-			)
-			if auditErr != nil {
-				return fmt.Errorf("failed to generate audit log: %w", auditErr)
-			}
-			auditBytes, auditErr := json.Marshal(auditLog)
-			if auditErr != nil {
-				return fmt.Errorf("failed to marshal audit log: %w", auditErr)
-			}
-
-			pub := decenstorage.New(decenstorage.PublishConfig{
-				IPFSNode:       ipfsNodeFlag,
-				ArweaveGateway: arweaveGatewayFlag,
-				ArweaveWallet:  arweaveWalletFlag,
-			})
-
-			fmt.Printf("\n=== Decentralised Storage ===\n")
-
-			if publishIPFSFlag {
-				result, ipfsErr := pub.PublishIPFS(ctx, auditBytes)
-				if ipfsErr != nil {
-					fmt.Printf("IPFS publish failed: %v\n", ipfsErr)
-				} else {
-					fmt.Printf("IPFS CID : %s\n", result.CID)
-					fmt.Printf("IPFS URL : %s\n", result.URL)
-				}
-			}
-
-			if publishArweaveFlag {
-				result, arErr := pub.PublishArweave(ctx, auditBytes)
-				if arErr != nil {
-					fmt.Printf("Arweave publish failed: %v\n", arErr)
-				} else {
-					fmt.Printf("Arweave TXID : %s\n", result.TXID)
-					fmt.Printf("Arweave URL  : %s\n", result.URL)
-				}
-			}
-		}
-
-		// ── Trace export ────────────────────────────────────────────────────────
-		// Build an ExecutionTrace from the last simulation's diagnostic events
-		// whenever trace output was requested (--generate-trace / --trace-output).
-		if (generateTrace || traceOutputFile != "") && lastSimResp != nil {
-			outPath := traceOutputFile
-			if outPath == "" {
-				// Default filename when only --generate-trace was supplied.
-				outPath = "trace-" + txHash[:min(8, len(txHash))] + ".json"
-			}
-			execTrace := trace.BuildExecutionTraceFromSimResponse(txHash, lastSimResp)
-			if len(execTrace.States) == 0 {
-				fmt.Fprintf(os.Stderr,
-					"Warning: trace export skipped — the simulator produced no diagnostic events for this transaction.\n"+
-						"  Ensure the simulator is up-to-date and the transaction includes InvokeHostFunction operations.\n"+
-						"  Run 'glassbox doctor --fix' to refresh the simulator binary.\n",
-				)
-			} else {
-				targetFmt := strings.ToLower(strings.TrimSpace(debugFormatFlag))
-				if targetFmt == "" || targetFmt == "text" || targetFmt == "json" {
-					// Default trace export format is JSON regardless of the display format.
-					targetFmt = "json"
-				}
-				fmt.Fprintf(os.Stderr, "Exporting %d-step trace as %s to %s...\n",
-					len(execTrace.States), targetFmt, outPath)
-
-				// Guard: abort export immediately if the context was already
-				// cancelled so we never write a partial file.
-				if ctx.Err() != nil {
-					fmt.Fprintf(os.Stderr, "Trace export skipped: operation was cancelled.\n")
-				} else {
-					doneExport := diagCollector.Start(diagnostics.PhaseTraceExport)
-					exportErr := trace.ExportWithCompatibility(execTrace, targetFmt, outPath, trace.ExportOptions{}, trace.DefaultCompatibilityOptions())
-					doneExport(exportErr)
-					if exportErr != nil {
-						// Remove any partial file the exporter may have created
-						// before the error was returned, then tell the user.
-						_ = os.Remove(outPath)
+						// Guard: abort export immediately if the context was already
+						// cancelled so we never write a partial file.
 						if ctx.Err() != nil {
-							fmt.Fprintf(os.Stderr,
-								"Trace export cancelled — partial file removed: %s\n", outPath)
+							fmt.Fprintf(os.Stderr, "Trace export skipped: operation was cancelled.\n")
 						} else {
-							fmt.Fprintf(os.Stderr,
-								"%s Trace export failed: %v\n"+
-									"  Fix: check that the output directory exists and you have write permissions.\n"+
-									"  Path: %s\n",
-								visualizer.Symbol("error"), exportErr, outPath,
-							)
+							doneExport := diagCollector.Start(diagnostics.PhaseTraceExport)
+							exportErr := trace.ExportWithCompatibility(execTrace, targetFmt, outPath, trace.ExportOptions{}, trace.DefaultCompatibilityOptions())
+							doneExport(exportErr)
+							if exportErr != nil {
+								// Remove any partial file the exporter may have created
+								// before the error was returned, then tell the user.
+								_ = os.Remove(outPath)
+								if ctx.Err() != nil {
+									fmt.Fprintf(os.Stderr,
+										"Trace export cancelled — partial file removed: %s\n", outPath)
+								} else {
+									fmt.Fprintf(os.Stderr,
+										"%s Trace export failed: %v\n"+
+											"  Fix: check that the output directory exists and you have write permissions.\n"+
+											"  Path: %s\n",
+										visualizer.Symbol("error"), exportErr, outPath,
+									)
+								}
+							} else {
+								sizeStr := traceExportedFileSize(outPath)
+								fmt.Printf("%s Trace exported to: %s%s\n", visualizer.Symbol("success"), outPath, sizeStr)
+							}
 						}
-					} else {
-						sizeStr := traceExportedFileSize(outPath)
-						fmt.Printf("%s Trace exported to: %s%s\n", visualizer.Symbol("success"), outPath, sizeStr)
-					}
-				}
-			}
-		}
-
-		// ── Flamegraph / pprof profiling ─────────────────────────────────────
-		// Produce a flamegraph when the global --profile flag was set.
-		if ProfileFlag && lastSimResp != nil {
-			execTrace := trace.BuildExecutionTraceFromSimResponse(txHash, lastSimResp)
-			if len(execTrace.States) == 0 {
-				fmt.Fprintf(os.Stderr,
-					"Warning: flamegraph skipped — no diagnostic events available.\n"+
-						"  Run with --snapshots or ensure the simulator produces diagnostic events.\n",
-				)
-			} else {
-				format := visualizer.ExportFormat(strings.ToLower(strings.TrimSpace(ProfileFormatFlag)))
-				if format != visualizer.FormatHTML && format != visualizer.FormatSVG {
-					format = visualizer.FormatHTML
-				}
-				flamegraphPath := txHash[:min(8, len(txHash))] + format.GetFileExtension()
-
-				// Two code paths: if the simulator returned a raw SVG flamegraph use
-				// that; otherwise generate one from the trace gas data via profile.
-				var flamegraphContent string
-				if lastSimResp.Flamegraph != "" {
-					flamegraphContent = visualizer.ExportFlamegraph(lastSimResp.Flamegraph, format)
-				} else {
-					if format == visualizer.FormatHTML {
-						// Use profile.GenerateHTML which writes to an io.Writer.
-						var profileBuf strings.Builder
-						if genErr := profile.GenerateHTML(execTrace, &profileBuf); genErr != nil {
-							fmt.Fprintf(os.Stderr,
-								"Warning: failed to generate flamegraph HTML: %v\n",
-								genErr,
-							)
-						} else {
-							flamegraphContent = profileBuf.String()
-						}
-					} else {
-						// SVG: not producible without the inferno crate output.
-						// Emit a clear diagnostic rather than an empty file.
-						fmt.Fprintf(os.Stderr,
-							"Warning: --profile-format=svg requires the simulator to return a raw flamegraph SVG.\n"+
-								"  The simulator did not return a flamegraph for this transaction.\n"+
-								"  Use --profile-format=html to generate an interactive flamegraph from trace data instead.\n",
-						)
 					}
 				}
 
-				if flamegraphContent != "" {
-					if err := os.WriteFile(flamegraphPath, []byte(flamegraphContent), 0o644); err != nil {
+				// ── Flamegraph / pprof profiling ─────────────────────────────────────
+				// Produce a flamegraph when the global --profile flag was set.
+				if ProfileFlag && lastSimResp != nil {
+					execTrace := trace.BuildExecutionTraceFromSimResponse(txHash, lastSimResp)
+					if len(execTrace.States) == 0 {
 						fmt.Fprintf(os.Stderr,
-							"%s Failed to write flamegraph to %q: %v\n"+
-								"  Fix: ensure the output directory exists and you have write permissions.\n",
-							visualizer.Symbol("error"), flamegraphPath, err,
+							"Warning: flamegraph skipped — no diagnostic events available.\n"+
+								"  Run with --snapshots or ensure the simulator produces diagnostic events.\n",
 						)
 					} else {
-						fmt.Printf("%s Flamegraph exported to: %s\n", visualizer.Symbol("success"), flamegraphPath)
+						format := visualizer.ExportFormat(strings.ToLower(strings.TrimSpace(ProfileFormatFlag)))
+						if format != visualizer.FormatHTML && format != visualizer.FormatSVG {
+							format = visualizer.FormatHTML
+						}
+						flamegraphPath := txHash[:min(8, len(txHash))] + format.GetFileExtension()
+
+						// Two code paths: if the simulator returned a raw SVG flamegraph use
+						// that; otherwise generate one from the trace gas data via profile.
+						var flamegraphContent string
+						if lastSimResp.Flamegraph != "" {
+							flamegraphContent = visualizer.ExportFlamegraph(lastSimResp.Flamegraph, format)
+						} else {
+							if format == visualizer.FormatHTML {
+								// Use profile.GenerateHTML which writes to an io.Writer.
+								var profileBuf strings.Builder
+								if genErr := profile.GenerateHTML(execTrace, &profileBuf); genErr != nil {
+									fmt.Fprintf(os.Stderr,
+										"Warning: failed to generate flamegraph HTML: %v\n",
+										genErr,
+									)
+								} else {
+									flamegraphContent = profileBuf.String()
+								}
+							} else {
+								// SVG: not producible without the inferno crate output.
+								// Emit a clear diagnostic rather than an empty file.
+								fmt.Fprintf(os.Stderr,
+									"Warning: --profile-format=svg requires the simulator to return a raw flamegraph SVG.\n"+
+										"  The simulator did not return a flamegraph for this transaction.\n"+
+										"  Use --profile-format=html to generate an interactive flamegraph from trace data instead.\n",
+								)
+							}
+						}
+
+						if flamegraphContent != "" {
+							if err := os.WriteFile(flamegraphPath, []byte(flamegraphContent), 0o644); err != nil {
+								fmt.Fprintf(os.Stderr,
+									"%s Failed to write flamegraph to %q: %v\n"+
+										"  Fix: ensure the output directory exists and you have write permissions.\n",
+									visualizer.Symbol("error"), flamegraphPath, err,
+								)
+							} else {
+								fmt.Printf("%s Flamegraph exported to: %s\n", visualizer.Symbol("success"), flamegraphPath)
+							}
+						}
 					}
 				}
-			}
-		}
 
-		if showMetricsFlag {
-			if clioutput.WantsJSON(debugJSONFlag, debugFormatFlag) {
-				_ = perfCollector.PrintJSON(cmd.OutOrStdout())
-			} else {
-				perfCollector.Print(cmd.OutOrStdout())
-			}
-		}
+				if showMetricsFlag {
+					if clioutput.WantsJSON(debugJSONFlag, debugFormatFlag) {
+						_ = perfCollector.PrintJSON(cmd.OutOrStdout())
+					} else {
+						perfCollector.Print(cmd.OutOrStdout())
+					}
+				}
 
-		// --timings: write phase timing table to stderr so it never pollutes
-		// stdout / JSON output. For JSON mode we embed timings as a structured
-		// object on stderr (one JSON line) so CI tooling can parse it separately.
-		if debugTimingsFlag {
-			if clioutput.WantsJSON(debugJSONFlag, debugFormatFlag) {
-				enc := json.NewEncoder(cmd.ErrOrStderr())
-				enc.SetIndent("", "  ")
-				_ = enc.Encode(map[string]interface{}{
-					"timings": diagCollector.BuildTimingsBlock(),
-				})
-			} else {
-				diagCollector.PrintHuman(cmd.ErrOrStderr())
-			}
-		}
+				// --timings: write phase timing table to stderr so it never pollutes
+				// stdout / JSON output. For JSON mode we embed timings as a structured
+				// object on stderr (one JSON line) so CI tooling can parse it separately.
+				if debugTimingsFlag {
+					if clioutput.WantsJSON(debugJSONFlag, debugFormatFlag) {
+						enc := json.NewEncoder(cmd.ErrOrStderr())
+						enc.SetIndent("", "  ")
+						_ = enc.Encode(map[string]interface{}{
+							"timings": diagCollector.BuildTimingsBlock(),
+						})
+					} else {
+						diagCollector.PrintHuman(cmd.ErrOrStderr())
+					}
+				}
 
-		// Translate context cancellation into the canonical ErrInterrupted so
-		// the caller (run() in main.go) emits "Interrupted." instead of a raw
-		// context error, and the exit code is 130 rather than 3.
-		if ctx.Err() != nil {
-			return ErrInterrupted
+				// Translate context cancellation into the canonical ErrInterrupted so
+				// the caller (run() in main.go) emits "Interrupted." instead of a raw
+				// context error, and the exit code is 130 rather than 3.
+				if ctx.Err() != nil {
+					return ErrInterrupted
+				}
+				return nil
+			}()
+
+			if sessionErr != nil {
+				if !watchFilesFlag {
+					return sessionErr
+				}
+				fmt.Printf("Debug session error: %v\n", sessionErr)
+			} else if !watchFilesFlag {
+				return nil
+			}
+
+			fmt.Println("Waiting for file changes...")
+			select {
+			case <-ctx.Done():
+				break watchLoop
+			case <-watchEvents:
+				fmt.Println("File change detected, rerunning...")
+				// Add a small separator
+				fmt.Println("==================================================")
+			}
 		}
 		return nil
 	},
@@ -1681,29 +1703,7 @@ func runDemoMode(cmdArgs []string) error {
 	fmt.Printf("\nToken Flow Summary:\n")
 	fmt.Printf("  %s XLM transferred\n", visualizer.Symbol("arrow_r"))
 	fmt.Printf("\nSession ready. Use 'Glassbox session save' to persist.\n")
-				return nil
-			}()
-			
-			if sessionErr != nil {
-				if !watchFilesFlag {
-					return sessionErr
-				}
-				fmt.Printf("Debug session error: %v\n", sessionErr)
-			} else if !watchFilesFlag {
-				return nil
-			}
-
-			fmt.Println("Waiting for file changes...")
-			select {
-			case <-ctx.Done():
-				break watchLoop
-			case <-watchEvents:
-				fmt.Println("File change detected, rerunning...")
-				// Add a small separator
-				fmt.Println("==================================================")
-			}
-		}
-		return nil
+	return nil
 }
 
 func runLocalWasmReplay() error {
@@ -2476,7 +2476,7 @@ func formatOperationSummary(op xdr.Operation) string {
 	switch op.Body.Type {
 	case xdr.OperationTypePayment:
 		if op.Body.PaymentOp != nil {
-			summary = fmt.Sprintf("%s -> %s", typeName, op.Body.PaymentOp.Destination)
+			summary = fmt.Sprintf("%s -> %s", typeName, op.Body.PaymentOp.Destination.Address())
 		}
 	case xdr.OperationTypeManageData:
 		if op.Body.ManageDataOp != nil {

@@ -445,7 +445,6 @@ func platformModuleHint(path string) string {
 	hints := map[string]string{
 		"/usr/lib/softhsm/libsofthsm2.so":                    "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
 		"/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so":    "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
-		"/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so":    "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
 		"/usr/local/lib/softhsm/libsofthsm2.so":               "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
 		"/usr/lib/opensc-pkcs11.so":                           "install OpenSC: 'apt install opensc' (Debian/Ubuntu) or 'brew install opensc' (macOS)",
 		"/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so":          "install OpenSC: 'apt install opensc' (Debian/Ubuntu) or 'brew install opensc' (macOS)",

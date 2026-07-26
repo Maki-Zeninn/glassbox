@@ -4,8 +4,6 @@
 package testhelpers
 
 import (
-	"context"
-
 	"github.com/dotandev/glassbox/internal/rpc"
 )
 

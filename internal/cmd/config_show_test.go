@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dotandev/glassbox/internal/config"
 )
 
 func TestConfigShowJSONOutput(t *testing.T) {
@@ -118,12 +120,12 @@ func TestResolveConfigSource(t *testing.T) {
 }
 
 func TestBuildConfigOutput(t *testing.T) {
-	cfg := &mockConfig{
-		RpcUrl:     "https://test.example.com",
-		Network:    "testnet",
-		LogLevel:   "debug",
-		CachePath:  "/tmp/cache",
-		Telemetry:  true,
+	cfg := &config.Config{
+		RpcUrl:    "https://test.example.com",
+		Network:   "testnet",
+		LogLevel:  "debug",
+		CachePath: "/tmp/cache",
+		Telemetry: true,
 	}
 
 	output := buildConfigOutput(cfg, "/test/config.toml")
@@ -158,16 +160,6 @@ func containsAt(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-// mockConfig is a minimal mock for testing config output building.
-type mockConfig struct {
-	RpcUrl     string
-	Network    string
-	LogLevel   string
-	CachePath  string
-	Telemetry  bool
-	RPCToken   string
 }
 
 // ── stripURLCredentials ───────────────────────────────────────────────────────

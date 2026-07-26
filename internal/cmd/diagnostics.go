@@ -330,6 +330,9 @@ func computeOverallHealth(out *DiagnosticsOutput) string {
 	}
 	return "Healthy"
 }
+
+// printDiagnosticsDashboard renders a human-readable diagnostics dashboard to w.
+func printDiagnosticsDashboard(w io.Writer, out DiagnosticsOutput) {
 	fmt.Fprintln(w, "╔═══════════════════════════════════════════════════════════════╗")
 	fmt.Fprintln(w, "║                    GLASSBOX DIAGNOSTICS                       ║")
 	fmt.Fprintln(w, "╚═══════════════════════════════════════════════════════════════╝")

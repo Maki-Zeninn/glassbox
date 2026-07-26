@@ -236,8 +236,17 @@ func TestExportCmd_SuccessfulExport_SnapshotReadable(t *testing.T) {
 	if len(snap.LedgerEntries) != 2 {
 		t.Errorf("expected 2 ledger entries, got %d", len(snap.LedgerEntries))
 	}
-	if snap.LedgerEntries["ledger-key-a"] != "ledger-val-a" {
-		t.Errorf("expected ledger-key-a=ledger-val-a, got: %v", snap.LedgerEntries["ledger-key-a"])
+	found := false
+	for _, tuple := range snap.LedgerEntries {
+		if len(tuple) == 2 && tuple[0] == "ledger-key-a" {
+			found = true
+			if tuple[1] != "ledger-val-a" {
+				t.Errorf("expected ledger-key-a=ledger-val-a, got: %v", tuple[1])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected ledger-key-a to be present in %v", snap.LedgerEntries)
 	}
 }
 

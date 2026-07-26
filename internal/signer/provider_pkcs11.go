@@ -239,10 +239,8 @@ func (p *PKCS11Provider) discoveryHint() string {
 	for _, m := range discovered {
 		paths = append(paths, filepath.ToSlash(m))
 	}
-	sortPaths := func() {
-		sort.Slice(paths, func(i, j int) bool {
-			return strings.ToLower(paths[i]) < strings.ToLower(paths[j])
-		})
-	}
+	sort.Slice(paths, func(i, j int) bool {
+		return strings.ToLower(paths[i]) < strings.ToLower(paths[j])
+	})
 	return "; discovered modules available on this system:\n  " + strings.Join(paths, "\n  ")
 }

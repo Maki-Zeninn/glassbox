@@ -63,10 +63,10 @@ func NewDiagnosticReport(t *trace.ExecutionTrace) *DiagnosticReport {
 
 			details := state.Error
 			location := ""
-			if state.SourceRef != nil && state.SourceRef.File != "" {
-				location = state.SourceRef.File
-				if state.SourceRef.Line > 0 {
-					location = fmt.Sprintf("%s:%d", location, state.SourceRef.Line)
+			if state.SourceFile != "" {
+				location = state.SourceFile
+				if state.SourceLine > 0 {
+					location = fmt.Sprintf("%s:%d", location, state.SourceLine)
 				}
 				action += fmt.Sprintf(" Source: %s", location)
 			}

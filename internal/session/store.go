@@ -221,32 +221,6 @@ func (s *Store) initSchema() error {
 	return nil
 }
 
-// columnExists checks if a column exists in a table.
-func (s *Store) columnExists(table, column string) (bool, error) {
-	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
-	if err != nil {
-		return false, fmt.Errorf("failed to inspect %s schema: %w", table, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var defaultValue interface{}
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
-			return false, fmt.Errorf("failed to scan %s schema: %w", table, err)
-		}
-		if name == column {
-			return true, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	return false, nil
-}
-
 func (s *Store) ensureColumn(table, column, definition string) error {
 	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
@@ -384,8 +358,8 @@ func (s *Store) Save(ctx context.Context, data *Data) error {
 		id, name, created_at, last_access_at, status, network, horizon_url, tx_hash,
 		envelope_xdr, result_xdr, result_meta_xdr, pinned_endpoint,
 		audit_hash, audit_signature, previous_session_hash,
-		sim_request_json, sim_response_json, env_fingerprint, provenance_json, annotations_json, GLASSBOX_version, schema_version
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		sim_request_json, sim_response_json, env_fingerprint, GLASSBOX_version, schema_version
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		name = excluded.name,
 		last_access_at = excluded.last_access_at,
@@ -623,41 +597,24 @@ func (s *Store) List(ctx context.Context, limit int) ([]*Data, error) {
 		var data Data
 		var createdAt, lastAccessAt string
 
-		var envFP, auditHash, auditSignature, prevSessionHash, provenanceJSON, annotationsJSON sql.NullString
+		envFP := sql.NullString{}
+		auditHash := sql.NullString{}
+		auditSignature := sql.NullString{}
+		previousSessionHash := sql.NullString{}
 		scanErr := rows.Scan(
 			&data.ID, &data.Name, &createdAt, &lastAccessAt, &data.Status,
 			&data.Network, &data.HorizonURL, &data.TxHash,
 			&data.EnvelopeXdr, &data.ResultXdr, &data.ResultMetaXdr, &data.PinnedEndpoint,
-			&auditHash, &auditSignature, &prevSessionHash,
-			&data.SimRequestJSON, &data.SimResponseJSON, &envFP, &provenanceJSON, &annotationsJSON, &data.ErstVersion, &data.SchemaVersion,
+			&auditHash, &auditSignature, &previousSessionHash,
+			&data.SimRequestJSON, &data.SimResponseJSON, &envFP, &data.ErstVersion, &data.SchemaVersion,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", scanErr)
 		}
-		if envFP.Valid {
-			data.EnvFingerprint = envFP.String
-		}
-		if provenanceJSON.Valid {
-			data.ProvenanceJSON = provenanceJSON.String
-		}
-		if annotationsJSON.Valid {
-			data.AnnotationsJSON = annotationsJSON.String
-		}
-		if auditHash.Valid {
-			data.AuditHash = auditHash.String
-		}
-		if auditSignature.Valid {
-			data.AuditSignature = auditSignature.String
-		}
-		if prevSessionHash.Valid {
-			data.PreviousSessionHash = prevSessionHash.String
-		}
-		if data.CreatedAt, err = time.Parse(time.RFC3339, createdAt); err != nil {
-			return nil, fmt.Errorf("failed to parse created_at for session %q: %w", data.ID, err)
-		}
-		if data.LastAccessAt, err = time.Parse(time.RFC3339, lastAccessAt); err != nil {
-			return nil, fmt.Errorf("failed to parse last_access_at for session %q: %w", data.ID, err)
-		}
+		data.AuditHash = auditHash.String
+		data.AuditSignature = auditSignature.String
+		data.PreviousSessionHash = previousSessionHash.String
+		data.EnvFingerprint = envFP.String
 		sessions = append(sessions, &data)
 	}
 
