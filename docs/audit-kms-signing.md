@@ -105,12 +105,89 @@ AWS credentials are resolved in the following order:
 
 ## Error Handling
 
-The KMS provider includes proper error handling for:
+Every KMS failure is wrapped with a fixed prefix and the underlying AWS SDK
+error is appended:
 
-- Invalid key IDs
-- Missing permissions
-- Network/connectivity issues
-- Key state issues (pending deletion, disabled, etc.)
+| Implementation | Operation | Error prefix |
+|----------------|-----------|--------------|
+| Go (`internal/signer/kms.go`) | AWS config load | `failed to create AWS config:` |
+| Go | Sign | `KMS sign request failed:` |
+| Go | GetPublicKey | `failed to get public key from KMS:` |
+| TS (`src/audit/signing/kmsSigner.ts`) | Sign | `KMS signing failed:` |
+| TS | GetPublicKey | `KMS GetPublicKey failed:` |
+
+### Failure reference
+
+Use the symptom to pick the first check. Local checks need no AWS access;
+cloud-side checks require someone with access to the key's account.
+
+| Symptom (error text) | Likely cause | First check | Side |
+|----------------------|--------------|-------------|------|
+| `AWS KMS provider requires kms_key_id in Extra config` | Key ID not configured (Go) | Set `GLASSBOX_AWS_KMS_KEY_ID` or `[audit.kms] key_id` | Local |
+| `KMS signer: GLASSBOX_KMS_KEY_ID is required` / `KMS signer: AWS_REGION is required` | Required env var missing (TS) | Export the variable named in the message | Local |
+| `KMS key ID must be an alias (alias/name), ARN, or key ID` / `invalid KMS ARN format` | Malformed key identifier | Compare the format to [Supported Key Identifiers](#supported-key-identifiers) | Local |
+| `AWS access key provided but secret key missing` | Half of a static credential pair configured | Set both `aws_access_key_id` and `aws_secret_access_key`, or neither | Local |
+| `kms provider selected but optional dependency @aws-sdk/client-kms is not installed` | Optional TS dependency absent | `npm install @aws-sdk/client-kms` | Local |
+| `failed to create AWS config: ...` | Profile or shared config file cannot be loaded | Check the profile name exists in `~/.aws/config` | Local |
+| `... NoCredentialProviders` / `failed to refresh cached credentials` / `ExpiredToken` | No usable credentials in the chain, or expired session credentials | Re-authenticate (SSO login, refresh session); check [Credential Precedence](#credential-precedence) | Local |
+| `... dial tcp` / `i/o timeout` / `no such host` | Network, proxy, or VPC endpoint cannot reach KMS | Confirm the region is correct and the KMS endpoint is reachable from this host | Local / network |
+| `... AccessDeniedException` | IAM policy or key policy does not allow `kms:Sign` / `kms:GetPublicKey` | Compare the [IAM policy](#aws-iam-policy) to the key policy for the calling principal | Cloud |
+| `... NotFoundException` | Key or alias does not exist in this region/account | Confirm the region; aliases are per region | Cloud |
+| `... DisabledException` / `KMSInvalidStateException` | Key disabled or pending deletion | Ask the key owner to check the key state | Cloud |
+| `... InvalidKeyUsageException` / `UnsupportedOperationException` | Key is not `SIGN_VERIFY`, or the signing algorithm does not match the key spec | Go signs with `ECDSA_SHA_512`; TS defaults to `ECDSA_SHA_256` (`GLASSBOX_KMS_SIGNING_ALGORITHM`) | Cloud |
+| `... ThrottlingException` | Request rate above the KMS quota | Lower the signing rate; see [Retry Behavior](#retry-behavior) | Cloud |
+| `KMS signing failed: response contained no Signature field` / `KMS GetPublicKey: response contained no PublicKey field` | KMS returned a success with an empty body (TS check) | Retry once; if it keeps happening, capture the AWS request ID | Cloud |
+
+### Sharing errors safely
+
+The wrapped error contains the full AWS SDK message, which can include the key
+ARN, account ID, and the IAM principal ARN. Before posting logs in an issue or
+chat:
+
+- Replace key ARNs, key IDs, account IDs and principal ARNs with placeholders
+  such as `arn:aws:kms:REGION:ACCOUNT_ID:key/KEY_ID`.
+- Never paste `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  or the `[audit.kms]` credential fields.
+- Do not share request payloads or digests sent to `Sign`, or debug wire
+  logs (for example SDK request logging), because they carry signed headers.
+- The AWS request ID alone is safe to share and is enough for AWS support to
+  trace a call.
+
+## Retry Behavior
+
+Glassbox has no KMS-specific retry logic. Neither `KMSSigner.Sign` (Go) nor
+`KmsSigner.sign` (TS) retries in its own code. Each issues one `Sign` call and
+returns the wrapped error on failure. `tests/kmsSigner.test.ts` asserts that a
+rejected `Sign` call surfaces immediately as `KMS signing failed: ...`.
+
+The only retries come from the AWS SDK client, which both implementations
+create with default settings:
+
+| | Go (`aws-sdk-go-v2`, `config.LoadDefaultConfig`) | TS (`@aws-sdk/client-kms`, `new KMSClient({ region })`) |
+|---|---|---|
+| Retry mode | `standard` | `standard` |
+| Max attempts | 3 (1 initial + 2 retries) | 3 (1 initial + 2 retries) |
+| Delay | Exponential backoff with jitter, capped at 20 s | Exponential backoff with jitter, capped at 20 s |
+| Retried | Throttling errors, transient network/connection errors, HTTP 5xx | Throttling errors, transient network/connection errors, HTTP 5xx |
+| Not retried | `AccessDeniedException`, `NotFoundException`, `DisabledException`, `KMSInvalidStateException`, `InvalidKeyUsageException`, validation errors and other 4xx client errors | Same |
+
+The SDK's standard settings can be overridden through the usual AWS
+environment, without changing Glassbox:
+
+- `AWS_MAX_ATTEMPTS`: total attempts, including the first.
+- `AWS_RETRY_MODE`: `standard` or `adaptive`.
+
+Operational notes:
+
+- A failed signing call can take up to roughly the sum of two backoff delays
+  plus three request timeouts before the error is returned.
+- The Go signer uses `context.Background()`, so there is no Glassbox-level
+  deadline on a KMS call. Cancelling the CLI process is the only way to stop it
+  early.
+- `PublicKey()` (Go) calls `GetPublicKey` on every invocation and follows
+  the same SDK retry rules.
+- Missing `Signature`/`PublicKey` fields in a successful response (TS) are
+  terminal and are not retried.
 
 ## Verification
 
