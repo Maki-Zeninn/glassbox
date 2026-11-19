@@ -45,6 +45,15 @@ func newClientForNetwork(name string, extraOpts ...rpc.ClientOption) (*rpc.Clien
 	if err != nil {
 		return nil, err
 	}
+	
+	// Apply resource limit flags from CLI
+	if RPCResponseLimitFlag != 0 {
+		opts = append(opts, rpc.WithResponsePayloadLimit(RPCResponseLimitFlag))
+	}
+	if RPCAggregateLimitFlag != 0 {
+		opts = append(opts, rpc.WithAggregateFetchLimit(RPCAggregateLimitFlag))
+	}
+	
 	return rpc.NewClient(append(opts, extraOpts...)...)
 }
 

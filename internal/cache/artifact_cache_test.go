@@ -221,3 +221,47 @@ func TestArtifactCache_MultipleTypesAndNetworks(t *testing.T) {
 	_, found3, _ := artifactCache.Get("contract-1", ArtifactContractCode, "mainnet")
 	assert.False(t, found3)
 }
+
+func TestArtifactCache_Get_EmptyKey_ReturnsError(t *testing.T) {
+	cacheDir := t.TempDir()
+	manager := NewManager(cacheDir, DefaultConfig())
+	artifactCache := NewArtifactCache(manager, 24*time.Hour)
+
+	_, _, err := artifactCache.Get("", ArtifactContractCode, "testnet")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key must not be empty")
+}
+
+func TestArtifactCache_Set_NilArtifact_ReturnsError(t *testing.T) {
+	cacheDir := t.TempDir()
+	manager := NewManager(cacheDir, DefaultConfig())
+	artifactCache := NewArtifactCache(manager, 24*time.Hour)
+
+	err := artifactCache.Set(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be nil")
+}
+
+func TestArtifactCache_Set_EmptyKey_ReturnsError(t *testing.T) {
+	cacheDir := t.TempDir()
+	manager := NewManager(cacheDir, DefaultConfig())
+	artifactCache := NewArtifactCache(manager, 24*time.Hour)
+
+	err := artifactCache.Set(&CachedArtifact{
+		Type:    ArtifactContractCode,
+		Network: "testnet",
+		Data:    "data",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key must not be empty")
+}
+
+func TestArtifactCache_Invalidate_EmptyKey_ReturnsError(t *testing.T) {
+	cacheDir := t.TempDir()
+	manager := NewManager(cacheDir, DefaultConfig())
+	artifactCache := NewArtifactCache(manager, 24*time.Hour)
+
+	err := artifactCache.Invalidate("", ArtifactContractCode, "testnet")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key must not be empty")
+}

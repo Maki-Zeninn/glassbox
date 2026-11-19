@@ -16,7 +16,7 @@ import (
 func sampleData() *Data {
 	return &Data{
 		ID:              "test-session-01",
-		TxHash:          "abcdef1234567890",
+		TxHash:          "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
 		Network:         "testnet",
 		Status:          "saved",
 		CreatedAt:       time.Now().UTC().Truncate(time.Second),

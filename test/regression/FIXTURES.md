@@ -11,6 +11,7 @@ fixtures in `test/regression/fixtures/`.
 ```
 test/regression/
 ├── FIXTURES.md              ← you are here
+├── fixture_index.json       ← auto-generated index (see scripts/index_regression_fixtures.sh)
 ├── fixtures/
 │   ├── rpc/                 ← Stellar RPC response stubs (JSON)
 │   ├── replay/              ← Snapshot registries and ledger-state files
@@ -22,6 +23,25 @@ test/regression/
 ```
 
 Each subdirectory has its own `README.md` with layer-specific rules.
+
+### Fixture index
+
+`fixture_index.json` is a deterministic, auto-generated catalogue of every
+fixture file.  Regenerate it after adding or removing fixtures:
+
+```bash
+./scripts/index_regression_fixtures.sh
+```
+
+Run validation without regenerating (e.g. in CI):
+
+```bash
+./scripts/index_regression_fixtures.sh --check-only
+```
+
+The index records each fixture's `path`, `layer`, `failure_class`, `issue_ref`,
+`schema_version`, and `test_name`.  CI fails if any fixture lacks a valid layer
+or an issue/PR reference in its filename.
 
 ---
 

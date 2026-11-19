@@ -57,6 +57,29 @@ type Manifest struct {
 	// The key is the member name (e.g. "envelope_xdr", "result_meta_xdr",
 	// "ledger_state").
 	Checksums map[string]string `json:"checksums"`
+
+	// ContentManifest is the artifact registry for this bundle.
+	// It is generated automatically on Save and verified on Load.
+	// Bundles created before this field was added will have a nil
+	// ContentManifest; LoadFromFile treats them as legacy bundles and
+	// validates via Checksums only.
+	ContentManifest *ContentManifest `json:"content_manifest,omitempty"`
+
+	// TraceData holds an optional execution trace captured during replay.
+	// Empty for bundles created without --capture-trace.
+	TraceData string `json:"trace_data,omitempty"`
+
+	// SourceMapRef holds the optional source-map manifest reference
+	// (e.g. a path or content hash) embedded for diagnostic replay.
+	SourceMapRef string `json:"source_map_ref,omitempty"`
+
+	// Signature holds an optional detached Ed25519 signature over the
+	// bundle's canonical content hash.
+	Signature string `json:"signature,omitempty"`
+
+	// PathPolicy carries portable-path metadata used when importing the
+	// bundle on a machine with a different workspace root.
+	PathPolicy *BundlePathPolicy `json:"path_policy,omitempty"`
 }
 
 // Provenance carries the origin metadata of the bundle.
@@ -127,6 +150,7 @@ func New(
 		LedgerState: copyLedgerState(ledgerState),
 	}
 	m.Checksums = computeChecksums(m)
+	m.ContentManifest = BuildContentManifest(m, nil)
 	return m
 }
 
@@ -212,7 +236,8 @@ func (m *Manifest) Verify() *VerificationReport {
 }
 
 // Validate performs structural validation: format version, required fields,
-// and checksum integrity.
+// and checksum integrity.  It also runs the content manifest check when a
+// ContentManifest is present.
 func (m *Manifest) Validate() error {
 	if m.FormatVersion != FormatVersion {
 		return &ValidationError{
@@ -228,6 +253,16 @@ func (m *Manifest) Validate() error {
 	report := m.Verify()
 	if !report.OK {
 		return &ChecksumMismatchError{Report: report}
+	}
+
+	// Content manifest validation (hard errors only; warnings are surfaced
+	// via ValidateContent which callers can invoke separately).
+	if m.ContentManifest != nil {
+		live := liveArtifactValues(m)
+		hardErr, _ := m.ContentManifest.Validate(live)
+		if hardErr != nil {
+			return hardErr
+		}
 	}
 
 	return nil
@@ -305,6 +340,20 @@ func (e *ChecksumMismatchError) Error() string {
 func IsChecksumMismatch(err error) bool {
 	_, ok := err.(*ChecksumMismatchError)
 	return ok
+}
+
+// ValidateContent runs the content manifest check and returns both hard errors
+// and non-fatal warnings.  When no ContentManifest is present (legacy bundle),
+// a warning is returned to indicate that content was validated via checksums only.
+//
+// This is separate from Validate() so callers (e.g. the CLI) can surface
+// warnings without aborting the import.
+func (m *Manifest) ValidateContent() (*ContentManifestValidationError, *ContentManifestWarning) {
+	if m.ContentManifest == nil {
+		return nil, &ContentManifestWarning{LegacyBundle: true}
+	}
+	live := liveArtifactValues(m)
+	return m.ContentManifest.Validate(live)
 }
 
 // ContainsCredentials is a safety check that returns true if the manifest

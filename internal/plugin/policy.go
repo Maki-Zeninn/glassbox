@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/dotandev/glassbox/internal/errors"
 )
 
 // Policy defines the sandbox policy for plugin loading.
@@ -25,15 +27,18 @@ type Policy struct {
 	// regardless of their capabilities or permissions.
 	DeniedPlugins []string `json:"denied_plugins,omitempty"`
 
-	// AllowUntrusted controls whether plugins with TrustLevel "untrusted" may
-	// be loaded. Defaults to true for backward compatibility.
+	// AllowUntrusted, when true, permits plugins with TrustLevel 'untrusted'
+	// or 'community' to load. The zero value is false (deny untrusted); use DefaultPolicy()
+	// to get a restrictive policy.
 	AllowUntrusted bool `json:"allow_untrusted"`
 }
 
-// DefaultPolicy returns a permissive policy that denies nothing.
-// This preserves backward-compatible behaviour when no policy file is present.
+// DefaultPolicy returns a secure-by-default policy that denies untrusted
+// and community plugins. Operators must explicitly opt-in to allow them
+// via config (plugin.allow_untrusted = true) or the CLI flag
+// --allow-untrusted-plugins.
 func DefaultPolicy() *Policy {
-	return &Policy{AllowUntrusted: true}
+	return &Policy{AllowUntrusted: false}
 }
 
 // LoadPolicy reads and parses a JSON policy file from path.
@@ -47,6 +52,26 @@ func LoadPolicy(path string) (*Policy, error) {
 		return nil, fmt.Errorf("failed to parse policy file %q: %w", path, err)
 	}
 	return &p, nil
+}
+
+// LoadPolicyWithOverride reads and parses a JSON policy file from path,
+// or uses DefaultPolicy() if path is empty, and overrides AllowUntrusted
+// if allowUntrustedOverride is true.
+func LoadPolicyWithOverride(path string, allowUntrustedOverride bool) (*Policy, error) {
+	var p *Policy
+	var err error
+	if path != "" {
+		p, err = LoadPolicy(path)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		p = DefaultPolicy()
+	}
+	if allowUntrustedOverride {
+		p.AllowUntrusted = true
+	}
+	return p, nil
 }
 
 // CheckManifest returns an error if the manifest violates the policy.
@@ -64,27 +89,47 @@ func (p *Policy) CheckManifest(m *Manifest) error {
 		}
 	}
 
+	deniedCaps := make(map[string]bool, len(p.DeniedCapabilities))
+	for _, c := range p.DeniedCapabilities {
+		deniedCaps[c] = true
+	}
+	deniedPerms := make(map[string]bool, len(p.DeniedPermissions))
+	for _, pr := range p.DeniedPermissions {
+		deniedPerms[pr] = true
+	}
+
 	// Check denied capabilities.
-	for _, deniedCap := range p.DeniedCapabilities {
-		for _, cap := range m.Capabilities {
-			if string(cap) == deniedCap {
-				return fmt.Errorf("plugin %q declares capability %q which is denied by policy", m.Name, deniedCap)
-			}
+	for _, cap := range m.Capabilities {
+		if deniedCaps[string(cap)] {
+			return fmt.Errorf("plugin %q declares capability %q which is denied by policy", m.Name, string(cap))
 		}
 	}
 
 	// Check denied permissions.
-	for _, deniedPerm := range p.DeniedPermissions {
-		for _, perm := range m.Permissions {
-			if string(perm) == deniedPerm {
-				return fmt.Errorf("plugin %q requests permission %q which is denied by policy", m.Name, deniedPerm)
-			}
+	for _, perm := range m.Permissions {
+		if deniedPerms[string(perm)] {
+			return fmt.Errorf("plugin %q requests permission %q which is denied by policy", m.Name, string(perm))
 		}
 	}
 
-	// Check untrusted allowance.
-	if !p.AllowUntrusted && (m.TrustLevel == TrustLevelUntrusted || m.TrustLevel == "") {
-		return fmt.Errorf("plugin %q has trust level %q which is not allowed by policy", m.Name, m.TrustLevel)
+	// Check untrusted/community allowance.
+	if !p.AllowUntrusted && (m.TrustLevel == TrustLevelUntrusted || m.TrustLevel == TrustLevelCommunity || m.TrustLevel == "") {
+		source := m.Author
+		if source == "" {
+			source = m.Entrypoint
+		}
+		if source == "" {
+			source = "unknown"
+		}
+		tLevel := m.TrustLevel
+		if tLevel == "" {
+			tLevel = TrustLevelUntrusted
+		}
+		return &errors.ErstError{
+			Code:    errors.ErstValidationFailed,
+			Message: fmt.Sprintf("plugin %q has trust level %q (source: %s) which is not allowed by policy", m.Name, tLevel, source),
+			Hint:    "To allow community and untrusted plugins, pass --allow-untrusted-plugins on the CLI or set plugin.allow_untrusted = true in the config TOML.",
+		}
 	}
 
 	return nil

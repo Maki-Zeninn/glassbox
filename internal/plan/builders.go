@@ -237,3 +237,265 @@ func BuildSessionSavePlan(opts SessionPlanOptions) *ExecutionPlan {
 	p.AddOutput("stdout", "", "Confirmation with session ID")
 	return p
 }
+
+// ProtocolRegisterPlanOptions holds the resolved configuration for the `protocol:register` command.
+// All values come from resolved flags / diagnostic results — never from live OS writes.
+type ProtocolRegisterPlanOptions struct {
+	// Platform is the detected OS platform (e.g. "linux", "darwin", "windows").
+	Platform string
+	// ExecutablePath is the resolved path to the glassbox binary.
+	ExecutablePath string
+	// AlreadyRegistered is true if the handler is already registered.
+	AlreadyRegistered bool
+	// RegisteredHandler is the current handler path if already registered.
+	RegisteredHandler string
+}
+
+// BuildProtocolRegisterPlan constructs an ExecutionPlan for the `protocol:register` command.
+// This function is side-effect free: it only builds a plan describing what would be written,
+// without actually modifying any OS state or opening any devices.
+func BuildProtocolRegisterPlan(opts ProtocolRegisterPlanOptions) *ExecutionPlan {
+	p := New("protocol:register")
+
+	p.AddNote("Platform: %s", opts.Platform)
+	p.AddNote("Executable: %s", opts.ExecutablePath)
+
+	if opts.AlreadyRegistered {
+		p.AddNote("Handler is already registered — no changes needed")
+		if opts.RegisteredHandler != "" {
+			p.AddNote("Current handler: %s", opts.RegisteredHandler)
+		}
+	} else {
+		p.AddNote("Will register glassbox:// protocol handler")
+		// Platform-specific file operations would be added here based on platform
+		switch opts.Platform {
+		case "linux":
+			p.AddFile("write", "~/.local/share/applications/glassbox-protocol.desktop", "Desktop entry file")
+			p.AddFile("write", "~/.local/bin/glassbox-protocol-handler", "Protocol helper script")
+		case "darwin":
+			p.AddFile("write", "~/Applications/Glassbox.app/Contents/Info.plist", "App bundle plist")
+			p.AddFile("write", "~/Applications/Glassbox.app/Contents/MacOS/glassbox-protocol-handler", "App bundle executable")
+		case "windows":
+			p.AddFile("write", "HKEY_CURRENT_USER\\Software\\Classes\\Glassbox", "Registry key for protocol handler")
+		}
+	}
+
+	p.AddOutput("stdout", "", "Registration confirmation")
+	return p
+}
+
+// SnapshotSavePlanOptions holds the resolved configuration for the `snapshot save` command.
+// All values come from resolved flags — never from live file reads or writes.
+type SnapshotSavePlanOptions struct {
+	// TxHash is the transaction hash the snapshot belongs to.
+	TxHash string
+	// Network is the Stellar network name.
+	Network string
+	// InputPath is the path to the input ledger-state JSON file.
+	InputPath string
+	// OutputPath is the path where the persisted snapshot will be written.
+	OutputPath string
+	// EnvelopeXdr is the base64 transaction envelope XDR (optional).
+	EnvelopeXdr string
+	// ResultMetaXdr is the base64 result meta XDR (optional).
+	ResultMetaXdr string
+	// WasmPath is the path to the WASM file for source hash (optional).
+	WasmPath string
+}
+
+// BuildSnapshotSavePlan constructs an ExecutionPlan for the `snapshot save` command.
+// This function is side-effect free: it only builds a plan describing what would be read/written,
+// without actually accessing the filesystem.
+func BuildSnapshotSavePlan(opts SnapshotSavePlanOptions) *ExecutionPlan {
+	p := New("snapshot save")
+	p.Network = opts.Network
+
+	p.AddNote("Transaction: %s", opts.TxHash)
+
+	if opts.InputPath != "" {
+		p.AddFile("read", opts.InputPath, "Input ledger-state JSON file")
+	}
+
+	if opts.WasmPath != "" {
+		p.AddFile("read", opts.WasmPath, "WASM binary for source hash computation")
+	}
+
+	if opts.OutputPath != "" {
+		p.AddFile("write", opts.OutputPath, "Persisted snapshot JSON")
+		p.AddOutput("file", opts.OutputPath, "Snapshot (JSON)")
+	} else {
+		p.AddOutput("file", "(default cache path)", "Snapshot (JSON)")
+	}
+
+	if opts.EnvelopeXdr != "" {
+		p.AddNote("Transaction envelope XDR will be included")
+	}
+	if opts.ResultMetaXdr != "" {
+		p.AddNote("Result metadata XDR will be included")
+	}
+
+	p.AddOutput("stdout", "", "Save confirmation with fingerprint")
+	return p
+}
+
+// SnapshotLoadPlanOptions holds the resolved configuration for the `snapshot load` command.
+// All values come from resolved flags — never from live file reads.
+type SnapshotLoadPlanOptions struct {
+	// Path is the path to the persisted snapshot file.
+	Path string
+	// Verify is true if integrity verification should be performed.
+	Verify bool
+	// ExpectedTxHash is the expected transaction hash for identity check (optional).
+	ExpectedTxHash string
+	// ExpectedNetwork is the expected network for identity check (optional).
+	ExpectedNetwork string
+}
+
+// BuildSnapshotLoadPlan constructs an ExecutionPlan for the `snapshot load` command.
+// This function is side-effect free: it only builds a plan describing what would be read,
+// without actually accessing the filesystem.
+func BuildSnapshotLoadPlan(opts SnapshotLoadPlanOptions) *ExecutionPlan {
+	p := New("snapshot load")
+
+	if opts.Path != "" {
+		p.AddFile("read", opts.Path, "Persisted snapshot file")
+	}
+
+	if opts.Verify {
+		p.AddNote("Integrity verification will be performed")
+	}
+
+	if opts.ExpectedTxHash != "" {
+		p.AddNote("Expected transaction hash: %s", opts.ExpectedTxHash)
+	}
+
+	if opts.ExpectedNetwork != "" {
+		p.AddNote("Expected network: %s", opts.ExpectedNetwork)
+	}
+
+	p.AddOutput("stdout", "", "Snapshot metadata and verification results")
+	return p
+}
+
+// GenerateReleaseManifestPlanOptions holds the resolved configuration for the generate-release-manifest tool.
+// All values come from resolved flags — never from live file reads, network calls, or signing operations.
+type GenerateReleaseManifestPlanOptions struct {
+	// DistDir is the directory containing release artifacts.
+	DistDir string
+	// Version is the release version string.
+	Version string
+	// Commit is the full git commit SHA.
+	Commit string
+	// BuildDate is the build timestamp in RFC3339 UTC.
+	BuildDate string
+	// SBOMRef is the filename of the SBOM artifact (optional).
+	SBOMRef string
+	// SigningKey is the path or literal PEM of the signing key.
+	SigningKey string
+	// Output is the path where the signed manifest will be written.
+	Output string
+	// Verify is true if post-sign verification should be performed.
+	Verify bool
+	// SignerIdentity is the human-readable signer identity (optional).
+	SignerIdentity string
+	// KeyID is the opaque key identifier (optional).
+	KeyID string
+}
+
+// BuildGenerateReleaseManifestPlan constructs an ExecutionPlan for the generate-release-manifest tool.
+// This function is side-effect free: it only builds a plan describing what would be done,
+// without actually accessing files, making network calls, or performing signing operations.
+func BuildGenerateReleaseManifestPlan(opts GenerateReleaseManifestPlanOptions) *ExecutionPlan {
+	p := New("generate-release-manifest")
+
+	p.AddNote("Version: %s", opts.Version)
+	p.AddNote("Commit: %s", opts.Commit)
+	p.AddNote("Build date: %s", opts.BuildDate)
+
+	if opts.DistDir != "" {
+		p.AddFile("read", opts.DistDir, "Scan release artifacts directory")
+	}
+
+	if opts.SBOMRef != "" {
+		p.AddNote("SBOM reference: %s", opts.SBOMRef)
+	}
+
+	if opts.SigningKey != "" {
+		p.SetSigning("software", "(ed25519 key)", "ed25519", "Sign release manifest")
+	}
+
+	if opts.Output != "" {
+		p.AddFile("write", opts.Output, "Signed manifest JSON")
+		p.AddOutput("file", opts.Output, "Signed manifest (JSON)")
+	} else {
+		p.AddOutput("stdout", "", "Signed manifest (JSON)")
+	}
+
+	if opts.Verify {
+		p.AddNote("Post-sign verification will be performed")
+	}
+
+	if opts.SignerIdentity != "" {
+		p.AddNote("Signer identity: %s", opts.SignerIdentity)
+	}
+	if opts.KeyID != "" {
+		p.AddNote("Key ID: %s", opts.KeyID)
+	}
+
+	return p
+}
+
+// GenerateSBOMPlanOptions holds the resolved configuration for the generate-sbom tool.
+// All values come from resolved flags — never from live file reads.
+type GenerateSBOMPlanOptions struct {
+	// Version is the release version string.
+	Version string
+	// Commit is the full git commit SHA.
+	Commit string
+	// ToolVersion is the Glassbox tool version.
+	ToolVersion string
+	// GoModulesPath is the path to go list -m -json all output file.
+	GoModulesPath string
+	// CargoLockPath is the path to Cargo.lock.
+	CargoLockPath string
+	// PackageLockPath is the path to package-lock.json.
+	PackageLockPath string
+	// Output is the path where the SBOM will be written.
+	Output string
+	// Verify is true if SBOM validation should be performed.
+	Verify bool
+}
+
+// BuildGenerateSBOMPlan constructs an ExecutionPlan for the generate-sbom tool.
+// This function is side-effect free: it only builds a plan describing what would be done,
+// without actually accessing files or making network calls.
+func BuildGenerateSBOMPlan(opts GenerateSBOMPlanOptions) *ExecutionPlan {
+	p := New("generate-sbom")
+
+	p.AddNote("Version: %s", opts.Version)
+	p.AddNote("Commit: %s", opts.Commit)
+	p.AddNote("Tool version: %s", opts.ToolVersion)
+
+	if opts.GoModulesPath != "" {
+		p.AddFile("read", opts.GoModulesPath, "Go modules JSON")
+	}
+	if opts.CargoLockPath != "" {
+		p.AddFile("read", opts.CargoLockPath, "Cargo.lock")
+	}
+	if opts.PackageLockPath != "" {
+		p.AddFile("read", opts.PackageLockPath, "package-lock.json")
+	}
+
+	if opts.Output != "" {
+		p.AddFile("write", opts.Output, "SPDX 2.3 JSON SBOM")
+		p.AddOutput("file", opts.Output, "SBOM (SPDX JSON)")
+	} else {
+		p.AddOutput("stdout", "", "SBOM (SPDX JSON)")
+	}
+
+	if opts.Verify {
+		p.AddNote("SBOM validation will be performed")
+	}
+
+	return p
+}

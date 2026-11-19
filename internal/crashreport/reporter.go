@@ -190,8 +190,10 @@ func (r *Reporter) sendToSentry(report Report) error {
 		scope.SetTag("arch", report.Arch)
 		scope.SetTag("go_version", report.GoVersion)
 		scope.SetTag("command", report.Command)
-		scope.SetExtra("stack_trace", report.StackTrace)
-		scope.SetExtra("commit_sha", report.CommitSHA)
+		scope.SetContext("report", sentry.Context{
+			"stack_trace": report.StackTrace,
+			"commit_sha":  report.CommitSHA,
+		})
 
 		sentry.CaptureMessage(report.ErrorMessage)
 	})

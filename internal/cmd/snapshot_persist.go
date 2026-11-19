@@ -6,6 +6,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/dotandev/glassbox/internal/config"
 	"github.com/dotandev/glassbox/internal/errors"
@@ -122,6 +123,24 @@ func runSnapshotSave(cmd *cobra.Command, args []string) error {
 		)
 	}
 
+	// Validate that the input file exists before loading it.
+	if info, err := os.Stat(snapSaveInputFlag); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf(
+				"input file %q does not exist\n"+
+					"  Fix: provide a valid ledger-state JSON file with --input",
+				snapSaveInputFlag,
+			)
+		}
+		return fmt.Errorf("failed to stat input file %q: %w", snapSaveInputFlag, err)
+	} else if info.IsDir() {
+		return fmt.Errorf(
+			"--input %q is a directory, not a file\n"+
+				"  Fix: provide a JSON file path, not a directory",
+			snapSaveInputFlag,
+		)
+	}
+
 	// Load the input ledger-state snapshot.
 	snap, err := snapshot.Load(snapSaveInputFlag)
 	if err != nil {
@@ -137,6 +156,11 @@ func runSnapshotSave(cmd *cobra.Command, args []string) error {
 			cacheDir = cfg.CachePath
 		}
 		outputPath = snapshot.DefaultSnapshotPath(cacheDir, snapSaveNetworkFlag, snapSaveTxHashFlag)
+	} else {
+		// Validate the explicitly provided output path.
+		if err := validateSnapshotOutputPath(outputPath); err != nil {
+			return err
+		}
 	}
 
 	// Build metadata.
@@ -150,6 +174,21 @@ func runSnapshotSave(cmd *cobra.Command, args []string) error {
 
 	// Compute WASM source hash if a WASM file is provided.
 	if snapSaveWasmFlag != "" {
+		// Validate WASM path exists and is a regular file before reading.
+		if info, err := os.Stat(snapSaveWasmFlag); err != nil {
+			if os.IsNotExist(err) {
+				return errors.WrapValidationError(fmt.Sprintf(
+					"WASM file %q does not exist — provide a valid path with --wasm",
+					snapSaveWasmFlag,
+				))
+			}
+			return errors.WrapValidationError(fmt.Sprintf("failed to stat WASM file: %v", err))
+		} else if info.IsDir() {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"--wasm %q is a directory, not a file — provide a .wasm file path",
+				snapSaveWasmFlag,
+			))
+		}
 		wasmBytes, err := os.ReadFile(snapSaveWasmFlag)
 		if err != nil {
 			return errors.WrapValidationError(fmt.Sprintf("failed to read WASM file: %v", err))
@@ -179,9 +218,57 @@ func runSnapshotSave(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// validateSnapshotOutputPath checks that a user-supplied output path is safe
+// to write to: it must not contain null bytes, and if it already exists it
+// must not be a directory.
+func validateSnapshotOutputPath(path string) error {
+	if path == "" {
+		return nil // caller handles the empty case separately
+	}
+	// Reject null bytes — they are never valid in a file path.
+	if strings.ContainsRune(path, 0) {
+		return fmt.Errorf(
+			"--output path contains a null byte, which is not allowed in file paths",
+		)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // path doesn't exist yet — that's fine for a new snapshot file
+		}
+		return fmt.Errorf("failed to stat output path %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf(
+			"--output %q is an existing directory, not a file path\n"+
+				"  Fix: provide a file path such as --output /path/to/snap.json",
+			path,
+		)
+	}
+	return nil
+}
+
 func runSnapshotLoad(cmd *cobra.Command, args []string) error {
 	if snapLoadPathFlag == "" {
 		return errors.WrapCliArgumentRequired("path")
+	}
+
+	// Validate that the file exists and is not a directory before attempting to parse it.
+	if info, err := os.Stat(snapLoadPathFlag); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf(
+				"snapshot file %q not found\n"+
+					"  Fix: verify the path or run 'glassbox snapshot save' to create a new snapshot",
+				snapLoadPathFlag,
+			)
+		}
+		return fmt.Errorf("failed to stat snapshot file %q: %w", snapLoadPathFlag, err)
+	} else if info.IsDir() {
+		return fmt.Errorf(
+			"--path %q is a directory, not a snapshot file\n"+
+				"  Fix: provide the full path to the .snap.json file",
+			snapLoadPathFlag,
+		)
 	}
 
 	ps, err := snapshot.LoadPersisted(snapLoadPathFlag)

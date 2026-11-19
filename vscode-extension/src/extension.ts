@@ -5,6 +5,12 @@ import * as vscode from 'vscode';
 import { ERSTClient } from './erstClient';
 import { TraceTreeDataProvider, TraceItem } from './traceTreeView';
 import { buildTraceTreeExport, renderStandaloneHtml } from './traceExport';
+import {
+    resolveFrameLocation,
+    classifyPath,
+    originLabelText,
+    type TraceFrame,
+} from './sourceMap';
 
 export function activate(context: vscode.ExtensionContext) {
     const client = new ERSTClient('127.0.0.1', 8080);
@@ -133,22 +139,149 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     // Navigation: next/prev step commands
-    let nextStepDisposable = vscode.commands.registerCommand('Glassbox.nextTraceStep', () => {
+    let nextStepDisposable = vscode.commands.registerCommand('Glassbox.nextTraceStep', async () => {
         const trace = traceDataProvider.getCurrentTrace();
         if (!trace) return;
         const idx = traceDataProvider.getCurrentStepIndex();
         if (idx < trace.states.length - 1) {
-            traceDataProvider.setCurrentStepIndex(idx + 1);
+            await vscode.commands.executeCommand('glassbox.openTraceStep', { stepIndex: idx + 1 });
         }
     });
-    let prevStepDisposable = vscode.commands.registerCommand('Glassbox.prevTraceStep', () => {
+    let prevStepDisposable = vscode.commands.registerCommand('Glassbox.prevTraceStep', async () => {
         const trace = traceDataProvider.getCurrentTrace();
         if (!trace) return;
         const idx = traceDataProvider.getCurrentStepIndex();
         if (idx > 0) {
-            traceDataProvider.setCurrentStepIndex(idx - 1);
+            await vscode.commands.executeCommand('glassbox.openTraceStep', { stepIndex: idx - 1 });
         }
     });
+
+    // Register command: glassbox.openSourceLocation
+    // Opens a source file at the given location. Used by trace step click-through
+    // and glassbox://trace/ deep links.  When the file cannot be resolved a
+    // graceful fallback message is shown instead of throwing.
+    let openSourceLocationDisposable = vscode.commands.registerCommand(
+        'glassbox.openSourceLocation',
+        async (args: { file?: string; line?: number; column?: number; stepJson?: string } | undefined) => {
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+            if (!args?.file) {
+                if (args?.stepJson) {
+                    // Fallback: no file path available — show raw step JSON.
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: args.stepJson,
+                        language: 'json',
+                    });
+                    await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+                    vscode.window.showInformationMessage(
+                        'Glassbox: no source location available for this trace step — showing step JSON instead.'
+                    );
+                }
+                return;
+            }
+
+            const frame: TraceFrame = {
+                file: args.file,
+                line: args.line,
+                column: args.column,
+            };
+
+            const origin = classifyPath(args.file, workspaceRoot);
+            const originTag = originLabelText(origin);
+            const loc = resolveFrameLocation(frame, workspaceRoot);
+
+            if (!loc) {
+                const msg = originTag
+                    ? `Glassbox: source not found (${originTag} ${args.file}) — showing step JSON instead`
+                    : `Glassbox: source not found for ${args.file} — showing step JSON instead`;
+                vscode.window.showInformationMessage(msg);
+                if (args.stepJson) {
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: args.stepJson,
+                        language: 'json',
+                    });
+                    await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+                }
+                return;
+            }
+
+            // Warn for generated / external paths but still navigate.
+            if (origin === 'generated') {
+                vscode.window.showInformationMessage(
+                    `Glassbox: navigating to generated source — ${originTag} ${args.file}`
+                );
+            } else if (origin === 'external') {
+                vscode.window.showInformationMessage(
+                    `Glassbox: navigating to external dependency — ${originTag} ${args.file}`
+                );
+            }
+
+            try {
+                const docUri = vscode.Uri.parse(loc.uri);
+                const pos = new vscode.Position(loc.line, loc.column);
+                const doc = await vscode.workspace.openTextDocument(docUri);
+                await vscode.window.showTextDocument(doc, {
+                    selection: new vscode.Range(pos, pos),
+                    viewColumn: vscode.ViewColumn.Beside,
+                    preserveFocus: false,
+                });
+            } catch {
+                // File exists on disk but could not be opened (e.g. binary WASM).
+                const msg = originTag
+                    ? `Glassbox: cannot open ${originTag} file ${args.file}`
+                    : `Glassbox: cannot open ${args.file}`;
+                vscode.window.showWarningMessage(msg);
+                if (args.stepJson) {
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: args.stepJson,
+                        language: 'json',
+                    });
+                    await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+                }
+            }
+        }
+    );
+
+    // Register command: glassbox.openTraceStep
+    // Jumps to a step by index in the current trace and navigates to its
+    // source location when available.  Used by next/prev navigation and by
+    // glassbox://trace/ deep links.
+    let openTraceStepDisposable = vscode.commands.registerCommand(
+        'glassbox.openTraceStep',
+        async (args: { stepIndex: number } | undefined) => {
+            const trace = traceDataProvider.getCurrentTrace();
+            if (!trace) {
+                vscode.window.showWarningMessage(
+                    'Glassbox: no trace loaded. Use "Glassbox: Debug Transaction" to load one first.'
+                );
+                return;
+            }
+
+            const idx = args?.stepIndex ?? traceDataProvider.getCurrentStepIndex();
+            if (idx < 0 || idx >= trace.states.length) {
+                vscode.window.showWarningMessage(
+                    `Glassbox: step index ${idx} is out of range for this trace (${trace.states.length} steps).`
+                );
+                return;
+            }
+
+            // Advance the provider to this step (highlights it in the tree view).
+            traceDataProvider.setCurrentStepIndex(idx);
+
+            const step = trace.states[idx];
+            const stepJson = JSON.stringify(step, null, 2);
+            const sourceRef = (step as any).source_ref as
+                | { file?: string; line?: number; column?: number }
+                | undefined;
+
+            await vscode.commands.executeCommand('glassbox.openSourceLocation', {
+                file: sourceRef?.file,
+                line: sourceRef?.line,
+                column: sourceRef?.column,
+                stepJson,
+            });
+        }
+    );
 
     context.subscriptions.push(
         triggerDebugDisposable,
@@ -160,6 +293,8 @@ export function activate(context: vscode.ExtensionContext) {
         showStateDiffDisposable,
         nextStepDisposable,
         prevStepDisposable,
+        openSourceLocationDisposable,
+        openTraceStepDisposable,
         client
     );
 }

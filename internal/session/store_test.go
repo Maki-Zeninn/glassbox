@@ -8,7 +8,161 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// ── Store.Save validation ──────────────────────────────────────────────────────
+
+func TestStore_Save_NilData_ReturnsError(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be nil")
+}
+
+func TestStore_Save_EmptyID_ReturnsError(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), &Data{
+		TxHash:  "abc",
+		Network: "testnet",
+		Status:  "saved",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ID is required")
+}
+
+func TestStore_Save_EmptyTxHash_ReturnsError(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), &Data{
+		ID:      "session-1",
+		Network: "testnet",
+		Status:  "saved",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transaction hash is required")
+}
+
+func TestStore_Save_EmptyNetwork_ReturnsError(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), &Data{
+		ID:      "session-1",
+		TxHash:  "abc",
+		Status:  "saved",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network is required")
+}
+
+func TestStore_Save_InvalidNetwork_ReturnsError(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), &Data{
+		ID:      "session-1",
+		TxHash:  "abc",
+		Network: "invalidnet",
+		Status:  "saved",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+	assert.Contains(t, err.Error(), "testnet")
+	assert.Contains(t, err.Error(), "mainnet")
+	assert.Contains(t, err.Error(), "futurenet")
+}
+
+// TestStore_Save_EmptyStatus_AutoPopulatesActive verifies that omitting Status
+// causes Save to default it to "active" rather than returning an error.
+func TestStore_Save_EmptyStatus_AutoPopulatesActive(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), &Data{
+		ID:      "session-1",
+		TxHash:  "abc",
+		Network: "testnet",
+	})
+	require.NoError(t, err, "empty status should be auto-populated to 'active', not rejected")
+}
+
+func TestStore_Save_InvalidStatus_ReturnsError(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	err = store.Save(context.Background(), &Data{
+		ID:      "session-1",
+		TxHash:  "abc",
+		Network: "testnet",
+		Status:  "borked",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+	assert.Contains(t, err.Error(), "active")
+	assert.Contains(t, err.Error(), "saved")
+	assert.Contains(t, err.Error(), "resumed")
+	assert.Contains(t, err.Error(), "recovered")
+	assert.Contains(t, err.Error(), "expired")
+}
+
+func TestStore_Save_ValidData_Succeeds(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now()
+	data := &Data{
+		ID:           "session-valid-" + now.Format("20060102150405"),
+		TxHash:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Network:      "testnet",
+		Status:       "saved",
+		CreatedAt:    now,
+		LastAccessAt: now,
+		SchemaVersion: SchemaVersion,
+	}
+
+	err = store.Save(context.Background(), data)
+	require.NoError(t, err)
+	assert.NotZero(t, data.CreatedAt)
+	assert.NotZero(t, data.LastAccessAt)
+	assert.Equal(t, SchemaVersion, data.SchemaVersion)
+}
+
+func TestStore_Save_PinnedEndpointValidation(t *testing.T) {
+	store, err := NewStore()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	now := time.Now()
+	data := &Data{
+		ID:             "session-pinned-" + now.Format("20060102150405"),
+		TxHash:         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Network:        "testnet",
+		Status:        "saved",
+		CreatedAt:     now,
+		LastAccessAt:  now,
+		SchemaVersion: SchemaVersion,
+		PinnedEndpoint: "http://127.0.0.1:9999",
+	}
+
+	err = store.Save(context.Background(), data)
+	require.NoError(t, err)
+}
 
 func TestStore_SaveLoad_RoundTrip(t *testing.T) {
 	overrideTempHome(t)

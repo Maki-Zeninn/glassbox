@@ -82,6 +82,14 @@ func (r *Runner) RunMultiProtocol(ctx context.Context, req *SimulationRequest, p
 			reqCopy := cloneRequest(req)
 			reqCopy.ProtocolVersion = &version
 
+			// Log the selected protocol version and the reason it was chosen so
+			// that debug output makes protocol selection transparent without
+			// requiring a debugger.
+			logger.Logger.Debug("Protocol selected",
+				"version", version,
+				"reason", "requested by caller for multi-protocol comparison",
+			)
+
 			resp, err := r.Run(ctx, reqCopy)
 			results[idx] = &MultiProtocolResult{
 				ProtocolVersion: version,

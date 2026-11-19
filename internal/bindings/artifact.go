@@ -191,3 +191,17 @@ func currentGlassboxVersion() string {
 	}
 	return "dev"
 }
+
+// GetGenerationMetadata returns the metadata embedded in generated files.
+// This is used by the verification command to compare generations.
+func GetGenerationMetadata(files []GeneratedFile) []ArtifactMetadata {
+	var metas []ArtifactMetadata
+	for _, f := range files {
+		meta, err := ParseMetadataHeader(f.Content)
+		if err != nil || meta == nil {
+			continue
+		}
+		metas = append(metas, *meta)
+	}
+	return metas
+}

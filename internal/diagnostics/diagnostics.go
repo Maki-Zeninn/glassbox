@@ -76,9 +76,10 @@ type DoneFunc func(err error)
 // It is injectable for tests — create one with NewCollector() in production
 // and pass a no-op via Noop() in unit tests that don't care about timing.
 type Collector struct {
-	mu      sync.Mutex
-	enabled bool
-	records []record
+	mu            sync.Mutex
+	enabled       bool
+	records       []record
+	correlationID string
 }
 
 // NewCollector returns an enabled Collector ready to record phases.
@@ -95,6 +96,20 @@ func Noop() *Collector {
 // Enabled reports whether timing collection is active.
 func (c *Collector) Enabled() bool {
 	return c.enabled
+}
+
+// SetCorrelationID sets the per-operation correlation ID for diagnostics.
+func (c *Collector) SetCorrelationID(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.correlationID = id
+}
+
+// CorrelationID returns the current per-operation correlation ID.
+func (c *Collector) CorrelationID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.correlationID
 }
 
 // Start begins timing phase p and returns a DoneFunc. The DoneFunc records
@@ -147,6 +162,8 @@ type PhaseRecord struct {
 // TimingsBlock is the JSON-serialisable container embedded in structured
 // command output envelopes when --timings is active.
 type TimingsBlock struct {
+	// CorrelationID is the per-operation correlation ID.
+	CorrelationID string `json:"correlation_id,omitempty"`
 	// Phases lists each completed phase in chronological order.
 	Phases []PhaseRecord `json:"phases"`
 	// TotalMs is the sum of all phase durations (not wall-clock total).
@@ -160,7 +177,11 @@ func (c *Collector) BuildTimingsBlock() TimingsBlock {
 	for _, r := range recs {
 		total += r.DurationMs
 	}
-	return TimingsBlock{Phases: recs, TotalMs: total}
+	return TimingsBlock{
+		CorrelationID: c.CorrelationID(),
+		Phases:        recs,
+		TotalMs:       total,
+	}
 }
 
 // MarshalJSON implements json.Marshaler so a *Collector can be embedded
@@ -176,6 +197,7 @@ func (c *Collector) MarshalJSON() ([]byte, error) {
 // Example output:
 //
 //	── Phase Timings ──────────────────────────────────
+//	  Correlation ID: corr-12345678
 //	  rpc_fetch      142ms
 //	  simulator      891ms
 //	  decode           3ms
@@ -185,11 +207,15 @@ func (c *Collector) PrintHuman(w io.Writer) {
 		return
 	}
 	recs := c.Records()
-	if len(recs) == 0 {
+	corrID := c.CorrelationID()
+	if len(recs) == 0 && corrID == "" {
 		return
 	}
 
 	fmt.Fprintln(w, "\n── Phase Timings ──────────────────────────────────")
+	if corrID != "" {
+		fmt.Fprintf(w, "  Correlation ID: %s\n", corrID)
+	}
 	for _, r := range recs {
 		d := time.Duration(r.DurationMs * float64(time.Millisecond))
 		status := ""

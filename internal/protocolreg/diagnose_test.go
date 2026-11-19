@@ -329,3 +329,173 @@ func TestDefaultRemediationSteps_MentionsRepairCommand(t *testing.T) {
 		t.Error("remediation steps should mention 'protocol:repair'")
 	}
 }
+
+// ── ValidateForSnapshotOperation ──────────────────────────────────────────────
+
+func TestValidateForSnapshotOperation_EmptyExecutablePath_ReturnsError(t *testing.T) {
+	r := &Registrar{executablePath: "", homeDir: t.TempDir()}
+	err := r.ValidateForSnapshotOperation()
+	if err == nil {
+		t.Fatal("expected error for empty executable path")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "executable path is empty") {
+		t.Errorf("error should mention 'executable path is empty', got: %q", msg)
+	}
+	if !strings.Contains(msg, "snapshot") {
+		t.Errorf("error should mention 'snapshot', got: %q", msg)
+	}
+	if !strings.Contains(msg, "Fix:") {
+		t.Errorf("error should include a Fix: hint, got: %q", msg)
+	}
+}
+
+func TestValidateForSnapshotOperation_MissingExecutable_ReturnsError(t *testing.T) {
+	r := &Registrar{
+		executablePath: "/nonexistent/path/glassbox",
+		homeDir:        t.TempDir(),
+	}
+	err := r.ValidateForSnapshotOperation()
+	if err == nil {
+		t.Fatal("expected error for non-existent executable")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not found") {
+		t.Errorf("error should mention 'not found', got: %q", msg)
+	}
+	if !strings.Contains(msg, "snapshot") {
+		t.Errorf("error should mention 'snapshot', got: %q", msg)
+	}
+}
+
+func TestValidateForSnapshotOperation_EmptyHomeDir_ReturnsError(t *testing.T) {
+	r := &Registrar{
+		executablePath: t.TempDir(),
+		homeDir:        "",
+	}
+	err := r.ValidateForSnapshotOperation()
+	if err == nil {
+		t.Fatal("expected error for empty home directory")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "home directory is empty") {
+		t.Errorf("error should mention 'home directory is empty', got: %q", msg)
+	}
+}
+
+func TestValidateForSnapshotOperation_NonExistentHomeDir_ReturnsError(t *testing.T) {
+	r := &Registrar{
+		executablePath: t.TempDir(),
+		homeDir:        "/nonexistent/home/dir",
+	}
+	err := r.ValidateForSnapshotOperation()
+	if err == nil {
+		t.Fatal("expected error for non-existent home directory")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "home directory") {
+		t.Errorf("error should mention 'home directory', got: %q", msg)
+	}
+}
+
+func TestValidateForSnapshotOperation_HealthNotReady_ReturnsError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-only: need file-based artefacts for health check")
+	}
+	r := newTestRegistrar(t)
+
+	// Create the desktop file directory but NOT the wrapper script — this
+	// makes the health check return HealthNotReady.
+	if err := os.MkdirAll(filepath.Dir(r.linuxDesktopPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(r.linuxWrapperPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write only the desktop file (not the wrapper script).
+	if err := os.WriteFile(r.linuxDesktopPath(), []byte(r.linuxDesktopEntry()), 0o644); err != nil {
+		t.Fatalf("write desktop: %v", err)
+	}
+
+	err := r.ValidateForSnapshotOperation()
+	if err == nil {
+		t.Fatal("expected error when health check is not ready")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "protocol registration") {
+		t.Errorf("error should mention 'protocol registration', got: %q", msg)
+	}
+	if !strings.Contains(msg, "Hint:") || !strings.Contains(msg, "protocol:repair") {
+		t.Errorf("error should include a repair hint, got: %q", msg)
+	}
+}
+
+func TestValidateForSnapshotOperation_ReturnsNilOnSuccess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-only: need full registration for success")
+	}
+	r := newTestRegistrar(t)
+
+	// Write all artefacts to make health check pass.
+	if err := os.MkdirAll(filepath.Dir(r.linuxDesktopPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(r.linuxWrapperPath()), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(r.linuxDesktopPath(), []byte(r.linuxDesktopEntry()), 0o644); err != nil {
+		t.Fatalf("write desktop: %v", err)
+	}
+	if err := os.WriteFile(r.linuxWrapperPath(), []byte(r.unixHandlerScript()), 0o755); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+
+	err := r.ValidateForSnapshotOperation()
+	if err != nil {
+		t.Fatalf("expected nil error when fully registered, got: %v", err)
+	}
+}
+
+func TestValidateForSnapshotOperation_UnsupportedPlatform_ReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		t.Skip("test only applies to unsupported platforms")
+	}
+	r := newTestRegistrar(t)
+	err := r.ValidateForSnapshotOperation()
+	if err == nil {
+		t.Fatal("expected error on unsupported platform")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not supported") {
+		t.Errorf("error should mention 'not supported', got: %q", msg)
+	}
+}
+
+func TestValidateForSnapshotOperation_AllErrorsAreActionable(t *testing.T) {
+	tests := []struct {
+		name string
+		r    *Registrar
+	}{
+		{"empty executable path", &Registrar{executablePath: "", homeDir: t.TempDir()}},
+		{"missing executable", &Registrar{executablePath: "/nonexistent/path", homeDir: t.TempDir()}},
+		{"empty home dir", &Registrar{executablePath: t.TempDir(), homeDir: ""}},
+		{"non-existent home dir", &Registrar{executablePath: t.TempDir(), homeDir: "/nonexistent/home"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.r.ValidateForSnapshotOperation()
+			if err == nil {
+				return // Skip — some platforms may pass
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "Fix:") {
+				t.Errorf("error should include a Fix: hint, got: %q", msg)
+			}
+			if !strings.Contains(msg, "snapshot") {
+				t.Errorf("error should mention 'snapshot', got: %q", msg)
+			}
+		})
+	}
+}

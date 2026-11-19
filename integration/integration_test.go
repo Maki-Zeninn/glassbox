@@ -47,11 +47,11 @@ func binaryPath(t *testing.T) string {
 	// Automate build if missing
 	t.Log("Glassbox binary not found; building it now...")
 	binPath := filepath.Join(root, binaryName())
-	buildErstBinary(t, root, binPath)
+	buildBinaryToPath(t, root, binPath)
 	return binPath
 }
 
-func buildErstBinary(t *testing.T, repoRoot, binPath string) {
+func buildBinaryToPath(t *testing.T, repoRoot, binPath string) {
 	t.Helper()
 	cmd := exec.Command("go", "build", "-o", binPath, "./cmd/glassbox")
 	cmd.Dir = repoRoot

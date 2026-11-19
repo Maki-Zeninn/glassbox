@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "minResourceFee": "1000",
+    "transactionData": "AAAAAA==",
+    "futureSorobanField": "some_future_value"
+  },
+  "id": 1
+}

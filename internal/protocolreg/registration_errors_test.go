@@ -6,6 +6,8 @@ package protocolreg
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -78,7 +80,7 @@ func TestNewRegistrar_RejectsSystemRootPath(t *testing.T) {
 	}
 	err := r.validatePreRegistration()
 	if err == nil {
-		t.Error("validatePreRegistration should reject a system root executable path")
+		t.Fatal("validatePreRegistration should reject a system root executable path")
 	}
 	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("error should mention 'empty' for root path, got: %v", err)
@@ -417,7 +419,7 @@ func TestNewRegistrar_PathWithDots_Rejected(t *testing.T) {
 	}
 	err := r.validatePreRegistration()
 	if err == nil {
-		t.Error("validatePreRegistration should reject path with traversal pattern")
+		t.Fatal("validatePreRegistration should reject path with traversal pattern")
 	}
 	if !strings.Contains(err.Error(), "no longer exists") {
 		t.Errorf("error should mention path doesn't exist, got: %v", err)

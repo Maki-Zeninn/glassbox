@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"text/tabwriter"
@@ -141,30 +142,25 @@ func init() {
 func runPluginList(cmd *cobra.Command, args []string) error {
 	dir := resolvePluginDir(pluginDirFlag)
 
-	// Load policy if provided.
-	var pol *plugin.Policy
-	if pluginPolicyFlag != "" {
-		var err error
-		pol, err = plugin.LoadPolicy(pluginPolicyFlag)
-		if err != nil {
-			return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
-		}
+	pol, err := plugin.LoadPolicyWithOverride(pluginPolicyFlag, AllowUntrustedPluginsFlag)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
 	}
 
 	manifests, errs := plugin.DiscoverManifests(dir)
 
 	// Print discovery errors as warnings but continue.
 	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", e)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", e)
 	}
 
 	if len(manifests) == 0 {
-		fmt.Printf("No plugins found in %s\n", dir)
-		fmt.Println("Create a subdirectory with a plugin.json manifest to register a plugin.")
+		fmt.Fprintf(cmd.OutOrStdout(), "No plugins found in %s\n", dir)
+		fmt.Fprintln(cmd.OutOrStdout(), "Create a subdirectory with a plugin.json manifest to register a plugin.")
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tVERSION\tAPI\tCAPABILITIES\tSTATUS\tDESCRIPTION")
 	fmt.Fprintln(w, "----\t-------\t---\t------------\t------\t-----------")
 
@@ -289,30 +285,28 @@ func runPluginValidate(cmd *cobra.Command, args []string) error {
 
 	m, err := plugin.LoadManifest(absPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "INVALID: %v\n", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "INVALID: %v\n", err)
 		return errors.WrapValidationError(fmt.Sprintf("manifest validation failed: %v", err))
 	}
 
-	fmt.Printf("VALID: manifest for plugin %q (v%s) passed all checks.\n", m.Name, m.Version)
+	fmt.Fprintf(cmd.OutOrStdout(), "VALID: manifest for plugin %q (v%s) passed all checks.\n", m.Name, m.Version)
 	if m.GlassboxVersionRange != "" {
-		fmt.Printf("  Glassbox version range: %s\n", m.GlassboxVersionRange)
+		fmt.Fprintf(cmd.OutOrStdout(), "  Glassbox version range: %s\n", m.GlassboxVersionRange)
 	}
 	if m.TrustLevel != "" {
-		fmt.Printf("  Trust level: %s\n", m.TrustLevel)
+		fmt.Fprintf(cmd.OutOrStdout(), "  Trust level: %s\n", m.TrustLevel)
 	}
 
-	// Check against policy if provided.
-	if pluginPolicyFlag != "" {
-		pol, err := plugin.LoadPolicy(pluginPolicyFlag)
-		if err != nil {
-			return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
-		}
-		if err := pol.CheckManifest(m); err != nil {
-			fmt.Fprintf(os.Stderr, "POLICY DENIED: %v\n", err)
-			return errors.WrapValidationError(fmt.Sprintf("policy check failed: %v", err))
-		}
-		fmt.Println("  Policy check: ALLOWED")
+	// Check against policy.
+	pol, err := plugin.LoadPolicyWithOverride(pluginPolicyFlag, AllowUntrustedPluginsFlag)
+	if err != nil {
+		return errors.WrapValidationError(fmt.Sprintf("failed to load policy: %v", err))
 	}
+	if err := pol.CheckManifest(m); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "POLICY DENIED: %v\n", err)
+		return errors.WrapValidationError(fmt.Sprintf("policy check failed: %v", err))
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "  Policy check: ALLOWED")
 
 	return nil
 }
@@ -373,45 +367,45 @@ func runPluginCapabilities(cmd *cobra.Command, args []string) error {
 				fmt.Sprintf("failed to load manifest for plugin %q: %v", pluginName, err),
 			)
 		}
-		printPluginCapabilities(m)
+		printPluginCapabilities(cmd.OutOrStdout(), m)
 		return nil
 	}
 
 	manifests, errs := plugin.DiscoverManifests(dir)
 	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", e)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", e)
 	}
 
 	if len(manifests) == 0 {
-		fmt.Printf("No plugins found in %s\n", dir)
+		fmt.Fprintf(cmd.OutOrStdout(), "No plugins found in %s\n", dir)
 		return errors.WrapValidationError("no plugins found")
 	}
 
 	for _, m := range manifests {
-		printPluginCapabilities(m)
-		fmt.Println()
+		printPluginCapabilities(cmd.OutOrStdout(), m)
+		fmt.Fprintln(cmd.OutOrStdout())
 	}
 	return nil
 }
 
 // printPluginCapabilities prints the capability and permission summary for a manifest.
-func printPluginCapabilities(m *plugin.Manifest) {
-	fmt.Printf("Plugin: %s (v%s)\n", m.Name, m.Version)
-	fmt.Printf("  Trust Level:  %s\n", trustLevelLabel(m.TrustLevel))
+func printPluginCapabilities(w io.Writer, m *plugin.Manifest) {
+	fmt.Fprintf(w, "Plugin: %s (v%s)\n", m.Name, m.Version)
+	fmt.Fprintf(w, "  Trust Level:  %s\n", trustLevelLabel(m.TrustLevel))
 	if m.GlassboxVersionRange != "" {
-		fmt.Printf("  Glassbox Range: %s\n", m.GlassboxVersionRange)
+		fmt.Fprintf(w, "  Glassbox Range: %s\n", m.GlassboxVersionRange)
 	}
-	fmt.Printf("  Capabilities:\n")
+	fmt.Fprintf(w, "  Capabilities:\n")
 	for _, cap := range m.Capabilities {
-		fmt.Printf("    - %s\n", cap)
+		fmt.Fprintf(w, "    - %s\n", cap)
 	}
 	if len(m.Permissions) > 0 {
-		fmt.Printf("  Permissions:\n")
+		fmt.Fprintf(w, "  Permissions:\n")
 		for _, perm := range m.Permissions {
-			fmt.Printf("    - %s\n", perm)
+			fmt.Fprintf(w, "    - %s\n", perm)
 		}
 	} else {
-		fmt.Printf("  Permissions: (none)\n")
+		fmt.Fprintf(w, "  Permissions: (none)\n")
 	}
 }
 

@@ -179,6 +179,20 @@ func (c *Client) rotateURL() bool {
 	return true
 }
 
+// ProviderPool returns the ProviderPool used by this client, or nil if not configured.
+func (c *Client) ProviderPool() *ProviderPool {
+	return c.providerPool
+}
+
+// PoolDiagnostics returns the AttemptDiagnostics from the most recent provider
+// pool operation. The returned value is a snapshot; it is safe to read after
+// any pool-backed RPC call returns. It is overwritten on the next call.
+func (c *Client) PoolDiagnostics() AttemptDiagnostics {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.LastAttemptDiagnostics
+}
+
 // RotateCount returns the number of times the client has switched
 // to a different Horizon URL via rotateURL.  It is safe for concurrent
 // use.

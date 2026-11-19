@@ -24,6 +24,20 @@ func TestMappingQuality_String(t *testing.T) {
 	assert.Equal(t, "unknown", MappingQualityUnknown.String())
 }
 
+func TestNewFallbackMapper_EmptyProjectRoot_ReturnsError(t *testing.T) {
+	_, err := NewFallbackMapper("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to resolve current working directory")
+}
+
+func TestNewFallbackMapper_ValidDir_ReturnsMapper(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewFallbackMapper(dir)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, dir, m.ProjectRoot)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FallbackMapper.Resolve — stripped binary (no DWARF)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,21 +45,35 @@ func TestMappingQuality_String(t *testing.T) {
 func TestFallbackMapper_Resolve_StrippedBinary_ReturnsUnknown(t *testing.T) {
 	// A minimal valid WASM binary with no custom sections.
 	wasmData := minimalWASM()
-	m := NewFallbackMapper(t.TempDir())
+	m, err := NewFallbackMapper(t.TempDir())
+	require.NoError(t, err)
 
 	result := m.Resolve(wasmData, 0x100)
 
 	require.NotNil(t, result)
 	assert.Equal(t, MappingQualityUnknown, result.Quality)
+	assert.Equal(t, ConfidenceUnknown, result.Confidence)
+	assert.Equal(t, MatchUnknown, result.MatchKind)
 	assert.NotEmpty(t, result.Warning, "should emit a warning for stripped binary")
 	assert.Contains(t, result.Warning, "no DWARF debug info")
 }
 
 func TestFallbackMapper_Resolve_EmptyData_ReturnsUnknown(t *testing.T) {
-	m := NewFallbackMapper(t.TempDir())
+	m, err := NewFallbackMapper(t.TempDir())
+	require.NoError(t, err)
 	result := m.Resolve([]byte{}, 0)
 	require.NotNil(t, result)
 	assert.Equal(t, MappingQualityUnknown, result.Quality)
+	assert.Contains(t, result.Warning, "WASM data is empty")
+}
+
+func TestFallbackMapper_Resolve_InvalidMagic_ReturnsUnknown(t *testing.T) {
+	m, err := NewFallbackMapper(t.TempDir())
+	require.NoError(t, err)
+	result := m.Resolve([]byte("not_wasm"), 0x100)
+	require.NotNil(t, result)
+	assert.Equal(t, MappingQualityUnknown, result.Quality)
+	assert.Contains(t, result.Warning, "WASM magic bytes")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,11 +97,16 @@ version = "0.1.0"
 	require.NoError(t, os.MkdirAll(srcDir, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "lib.rs"), []byte("// stub"), 0600))
 
-	m := NewFallbackMapper(dir)
+	m, err := NewFallbackMapper(dir)
+	require.NoError(t, err)
 	result := m.Resolve(minimalWASM(), 0x100)
 
 	require.NotNil(t, result)
 	assert.Equal(t, MappingQualityHeuristic, result.Quality)
+	assert.Equal(t, MatchHeuristic, result.MatchKind)
+	assert.Equal(t, ConfidenceHeuristicCargo, result.Confidence)
+	assert.True(t, result.Evidence.Heuristic)
+	assert.Equal(t, LinkCandidate, result.LinkPresentation)
 	assert.Contains(t, result.File, "lib.rs")
 	assert.NotEmpty(t, result.Warning)
 	assert.Contains(t, result.Warning, "Cargo manifest fallback")
@@ -91,7 +124,8 @@ version = "0.1.0"
 	require.NoError(t, err)
 	// Intentionally do NOT create src/lib.rs.
 
-	m := NewFallbackMapper(dir)
+	m, err := NewFallbackMapper(dir)
+	require.NoError(t, err)
 	result := m.Resolve(minimalWASM(), 0x100)
 
 	require.NotNil(t, result)
@@ -220,7 +254,8 @@ func TestIsValidCrateName(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestFallbackMapper_ResolveFilePath_AbsolutePassthrough(t *testing.T) {
-	m := NewFallbackMapper("/project")
+	m, err := NewFallbackMapper("/project")
+	require.NoError(t, err)
 	abs := "/absolute/path/src/lib.rs"
 	assert.Equal(t, abs, m.resolveFilePath(abs))
 }
@@ -232,13 +267,15 @@ func TestFallbackMapper_ResolveFilePath_RelativeResolvesAgainstRoot(t *testing.T
 	require.NoError(t, os.MkdirAll(srcDir, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "lib.rs"), []byte(""), 0600))
 
-	m := NewFallbackMapper(dir)
+	m, err := NewFallbackMapper(dir)
+	require.NoError(t, err)
 	resolved := m.resolveFilePath("src/lib.rs")
 	assert.Equal(t, filepath.Join(dir, "src", "lib.rs"), resolved)
 }
 
 func TestFallbackMapper_ResolveFilePath_RelativeNotFound_ReturnsOriginal(t *testing.T) {
-	m := NewFallbackMapper(t.TempDir())
+	m, err := NewFallbackMapper(t.TempDir())
+	require.NoError(t, err)
 	rel := "src/nonexistent.rs"
 	assert.Equal(t, rel, m.resolveFilePath(rel))
 }
@@ -262,7 +299,8 @@ func TestExtractDWARFLineFiles_EmptyData_ReturnsNil(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestFallbackMapper_Warning_ContainsRemediation(t *testing.T) {
-	m := NewFallbackMapper(t.TempDir())
+	m, err := NewFallbackMapper(t.TempDir())
+	require.NoError(t, err)
 	result := m.Resolve(minimalWASM(), 0x42)
 
 	require.NotNil(t, result)
@@ -279,7 +317,8 @@ func TestFallbackMapper_PartialDWARF_Warning_MentionsPartial(t *testing.T) {
 	// Build a WASM with a .debug_line section containing a file name but no
 	// .debug_info — simulates a partially stripped binary.
 	wasm := wasmWithDebugLineFile("src/lib.rs")
-	m := NewFallbackMapper(t.TempDir())
+	m, err := NewFallbackMapper(t.TempDir())
+	require.NoError(t, err)
 	result := m.Resolve(wasm, 0x10)
 
 	require.NotNil(t, result)
@@ -304,7 +343,8 @@ func TestFallbackMapper_Deterministic(t *testing.T) {
 	require.NoError(t, os.MkdirAll(srcDir, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "lib.rs"), []byte(""), 0600))
 
-	m := NewFallbackMapper(dir)
+	m, err := NewFallbackMapper(dir)
+	require.NoError(t, err)
 	r1 := m.Resolve(minimalWASM(), 0x200)
 	r2 := m.Resolve(minimalWASM(), 0x200)
 
@@ -312,6 +352,8 @@ func TestFallbackMapper_Deterministic(t *testing.T) {
 	require.NotNil(t, r2)
 	assert.Equal(t, r1.File, r2.File)
 	assert.Equal(t, r1.Quality, r2.Quality)
+	assert.Equal(t, r1.Confidence, r2.Confidence)
+	assert.Equal(t, r1.MatchKind, r2.MatchKind)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

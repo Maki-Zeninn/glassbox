@@ -6,6 +6,7 @@ package protocolreg
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,141 @@ func TestValidateDiscoveredPath_WhitespacePath_Rejected(t *testing.T) {
 	_, err := validateDiscoveredPath("   ", "test-source")
 	if err == nil {
 		t.Fatal("expected error for whitespace-only path")
+	}
+}
+
+func TestValidateDiscoveredPath_TooLongPath_ReturnsError(t *testing.T) {
+	longPath := "/a/" + strings.Repeat("b", maxDiscoveredPathLength)
+	_, err := validateDiscoveredPath(longPath, "test-source")
+	if err == nil {
+		t.Fatal("expected error for path exceeding max length")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "too long") {
+		t.Errorf("error should mention 'too long', got: %v", err)
+	}
+	if !strings.Contains(msg, "Fix:") {
+		t.Errorf("error should include a Fix: hint, got: %v", err)
+	}
+}
+
+func TestValidateDiscoveredPath_ExactMaxLength_Accepted(t *testing.T) {
+	dir := t.TempDir()
+	// Create a path at exactly maxDiscoveredPathLength by using a short dir name.
+	shortName := "x"
+	padLen := maxDiscoveredPathLength - len(dir) - len(shortName) - 1 // -1 for separator
+	if padLen > 0 {
+		shortName = shortName + strings.Repeat("a", padLen)
+	}
+	exe := filepath.Join(dir, shortName[:min(len(shortName), maxDiscoveredPathLength-len(dir)-1)])
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create test file: %v", err)
+	}
+
+	// Shorten the name to fit within the limit.
+	if len(exe) > maxDiscoveredPathLength {
+		exe = exe[:maxDiscoveredPathLength]
+		// Ensure we truncate at a separator boundary.
+		if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("create truncated test file: %v", err)
+		}
+	}
+
+	got, err := validateDiscoveredPath(exe, "test-source")
+	if err != nil {
+		t.Fatalf("path at exact max length should be accepted: %v", err)
+	}
+	if got == "" {
+		t.Error("expected a non-empty resolved path")
+	}
+}
+
+func TestValidateDiscoveredPath_NonExecutableOnUnix_ReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission check is Unix-only")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "glassbox")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("create non-executable test file: %v", err)
+	}
+
+	_, err := validateDiscoveredPath(exe, "test-source")
+	if err == nil {
+		t.Fatal("expected error for non-executable file on Unix")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not executable") {
+		t.Errorf("error should mention 'not executable', got: %v", err)
+	}
+	if !strings.Contains(msg, "chmod +x") {
+		t.Errorf("error should suggest chmod +x, got: %v", err)
+	}
+}
+
+func TestValidateDiscoveredPath_ExecutableOnUnix_Accepted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable permission check is Unix-only")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "glassbox")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create executable test file: %v", err)
+	}
+
+	got, err := validateDiscoveredPath(exe, "test-source")
+	if err != nil {
+		t.Fatalf("executable file should be accepted: %v", err)
+	}
+	if got == "" {
+		t.Error("expected a non-empty resolved path")
+	}
+}
+
+func TestValidateDiscoveredPath_Windows_NoPermissionCheck(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "glassbox.exe")
+	// On Windows, we don't check executable permission, only existence.
+	if err := os.WriteFile(exe, []byte("not really an exe"), 0o644); err != nil {
+		t.Fatalf("create test file: %v", err)
+	}
+
+	got, err := validateDiscoveredPath(exe, "test-source")
+	if err != nil {
+		t.Fatalf("Windows should accept non-executable file: %v", err)
+	}
+	if got == "" {
+		t.Error("expected a non-empty resolved path")
+	}
+}
+
+func TestValidateDiscoveredPath_SymlinkToLongPath_ReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink test not applicable on Windows")
+	}
+	dir := t.TempDir()
+
+	// Create a real executable at a short path.
+	actualExe := filepath.Join(dir, "real_exe")
+	if err := os.WriteFile(actualExe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("create executable: %v", err)
+	}
+
+	// Create a symlink with a very long name pointing to it.
+	longName := filepath.Join(dir, strings.Repeat("a", maxDiscoveredPathLength-len(dir)+10))
+	if err := os.Symlink(actualExe, longName); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	_, err := validateDiscoveredPath(longName, "test-source")
+	if err == nil {
+		t.Fatal("expected error for path exceeding max length")
+	}
+	if !strings.Contains(err.Error(), "too long") {
+		t.Errorf("error should mention 'too long', got: %v", err)
 	}
 }
 

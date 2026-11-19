@@ -41,6 +41,11 @@ type VerificationReport struct {
 	Issues   []string
 	// ElapsedMs is how long the verification took in milliseconds.
 	ElapsedMs int64
+	// TraceContext carries the W3C trace identifiers for the active registration
+	// verification span. When set, the Glassbox backend can correlate this
+	// verification result with an originating distributed trace for accurate
+	// session attribution.
+	TraceContext *URITraceContext
 }
 
 // validatePathLength checks that a path is within acceptable length limits.
@@ -314,6 +319,94 @@ func (r *Registrar) Verify() (*VerificationReport, error) {
 	}
 
 	return report, nil
+}
+
+// ValidateForSnapshotOperation checks that the protocol registration is in a
+// healthy enough state to support snapshot-related workflows (loading persisted
+// snapshots, saving snapshot registries, and deep-linking into snapshot data).
+// It returns nil when the registration is ready, or a descriptive error with
+// remediation guidance when something is wrong.
+//
+// This is a lighter-weight check than PreflightCheck (which is meant for
+// pre-registration validation). It focuses on the subset of conditions that
+// would cause snapshot workflows to fail:
+//   - Executable path is non-empty and reachable
+//   - Home directory is accessible
+//   - Platform is supported
+//   - (Optional) Health check passes — the handler is actually registered
+func (r *Registrar) ValidateForSnapshotOperation() error {
+	// Check executable path is non-empty.
+	if r.executablePath == "" {
+		return fmt.Errorf(
+			"protocol registration not ready for snapshot operations: executable path is empty\n" +
+				"  Snapshot workflows need a valid glassbox binary to handle glassbox:// deep links.\n" +
+				"  Fix: ensure glassbox is invoked from a valid binary path, not via 'go run'.",
+		)
+	}
+
+	// Check executable exists and is reachable.
+	if _, err := os.Stat(r.executablePath); err != nil {
+		return fmt.Errorf(
+			"protocol registration not ready for snapshot operations:\n"+
+				"  executable not found at %s: %v\n"+
+				"  The glassbox binary is required for snapshot deep-linking and protocol handler invocations.\n"+
+				"  Fix: reinstall Glassbox or verify the binary path is correct.",
+			r.executablePath, err,
+		)
+	}
+
+	// Check platform is supported.
+	switch runtime.GOOS {
+	case "windows", "darwin", "linux":
+		// supported
+	default:
+		return fmt.Errorf(
+			"protocol registration not ready for snapshot operations:\n"+
+				"  protocol registration is not supported on %s\n"+
+				"  Snapshot deep-linking via glassbox:// requires a supported platform.\n"+
+				"  Fix: use Linux, macOS, or Windows for snapshot workflows that use protocol registration.",
+			runtime.GOOS,
+		)
+	}
+
+	// Check home directory is accessible.
+	if r.homeDir == "" {
+		return fmt.Errorf(
+			"protocol registration not ready for snapshot operations: home directory is empty\n"+
+				"  Snapshot artefacts may need to be written to the home directory.\n"+
+				"  Fix: set the HOME environment variable or ensure os.UserHomeDir() returns a valid path.",
+		)
+	}
+	if _, err := os.Stat(r.homeDir); err != nil {
+		return fmt.Errorf(
+			"protocol registration not ready for snapshot operations:\n"+
+				"  home directory %s is not accessible: %v\n"+
+				"  Fix: ensure the home directory exists and is readable.",
+			r.homeDir, err,
+		)
+	}
+
+	// Run a lightweight health check to verify the handler is actually registered.
+	health := r.HealthCheck()
+	if !health.Ready {
+		var failures []string
+		for _, f := range health.Failures {
+			failures = append(failures, f)
+		}
+		hint := health.Hint
+		if hint == "" {
+			hint = "Run 'glassbox protocol:repair' to restore the handler registration."
+		}
+		return fmt.Errorf(
+			"protocol registration is not fully ready for snapshot operations (%d issue(s)):\n"+
+				"  %s\n"+
+				"  Snapshot workflows benefit from an active glassbox:// protocol handler for deep-linking.\n"+
+				"  Hint: %s",
+			len(failures), strings.Join(failures, "; "), hint,
+		)
+	}
+
+	return nil
 }
 
 // validateRegistrationPreconditions rejects invalid inputs before any OS

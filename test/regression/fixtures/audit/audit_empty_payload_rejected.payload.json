@@ -1,0 +1,6 @@
+{
+  "_comment": "Canonical empty audit payload stub. A completely blank string (not this file) must be rejected by validateAuditSignArgs before signing. This file contains a valid-but-semantically-empty JSON object used to test the non-blank path. Referenced by TestRegression_Audit_EmptyPayload_Rejected.",
+  "_failure_class": "empty-payload-signed",
+  "event": "",
+  "timestamp": "2026-01-01T00:00:00Z"
+}

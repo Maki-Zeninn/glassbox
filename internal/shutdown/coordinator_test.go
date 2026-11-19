@@ -34,7 +34,7 @@ func TestCoordinatorRun_LIFOAndOnce(t *testing.T) {
 
 	want := []string{"third", "second", "first"}
 	if len(order) != len(want) {
-		t.Fatalf("unexpected hook count: got %d want %d", len(order), len(want))
+		t.Fatalf("unexpected hook count: got %d want %d", len(order), want)
 	}
 	for i := range want {
 		if order[i] != want[i] {
@@ -49,5 +49,38 @@ func TestCoordinatorRun_LIFOAndOnce(t *testing.T) {
 	}
 	if len(order) != 0 {
 		t.Fatalf("expected no hooks on second run, got %d", len(order))
+	}
+}
+
+func TestCoordinator_HookPanic_DoesNotPropagate(t *testing.T) {
+	c := NewCoordinator()
+
+	// Register a hook that panics
+	c.Register("panicking-hook", func(ctx context.Context) error {
+		panic("test panic")
+	})
+
+	// Register a second hook that should still run after the panic
+	ran := false
+	c.Register("second-hook", func(ctx context.Context) error {
+		ran = true
+		return nil
+	})
+
+	// The test should not panic
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("panic propagated: %v", r)
+		}
+	}()
+
+	if err := c.Run(context.Background()); err != nil {
+		// We expect an error from the panicked hook
+		_ = err
+	}
+
+	// The second hook should still have run
+	if !ran {
+		t.Errorf("second hook did not run; panic recovery may have stopped execution")
 	}
 }

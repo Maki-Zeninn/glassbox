@@ -20,6 +20,8 @@ use std::fmt;
 pub struct SnapshotId(u64);
 
 impl SnapshotId {
+    /// Returns the raw counter value. This is unique only within a single
+    /// [`HostSnapshotTracker`] instance and is not globally unique.
     pub fn as_u64(self) -> u64 {
         self.0
     }
@@ -49,7 +51,7 @@ pub struct CapturedSnapshot {
     pub host_fn_name: String,
     /// The ledger state at the moment of capture.
     pub state: LedgerSnapshot,
-    /// If this is an After snapshot, the ID of the corresponding Before snapshot.
+    /// Always None in the current implementation. Reserved for tracking the corresponding before-snapshot ID in nested host call scenarios.
     pub before_id: Option<SnapshotId>,
     /// Whether the host function trapped (only meaningful for After snapshots).
     pub trapped: bool,
@@ -85,6 +87,7 @@ impl HostSnapshotTracker {
     /// Takes a snapshot of the current ledger state and stores it as
     /// the pending "before" snapshot.
     pub fn take_before_snapshot(&mut self, host_fn_name: &str, state: LedgerSnapshot) {
+        debug_assert!(self.pending_before.is_none(), "take_before_snapshot called twice without take_after_snapshot");
         let id = self.next_snapshot_id();
         self.pending_before = Some(CapturedSnapshot {
             id,

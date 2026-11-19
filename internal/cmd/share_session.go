@@ -5,12 +5,14 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/errors"
+	"github.com/dotandev/glassbox/internal/security"
 	"github.com/dotandev/glassbox/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -40,6 +42,32 @@ Validation:
 		ctx := cmd.Context()
 
 		outputFlag, _ := cmd.Flags().GetString("output")
+		redactFlag, _ := cmd.Flags().GetString("redact")
+		previewFlag, _ := cmd.Flags().GetBool("preview")
+
+		// Parse secret scan mode
+		var scanMode security.ScannerMode
+		if secretScanModeFlag != "" {
+			switch strings.ToUpper(strings.TrimSpace(secretScanModeFlag)) {
+			case "OPT_IN":
+				scanMode = security.ModeOptIn
+			case "STRICT":
+				scanMode = security.ModeStrict
+			default:
+				return errors.WrapValidationError(
+					fmt.Sprintf(
+						"--secret-scan-mode must be either 'opt-in' or 'strict', got %q\n"+
+							"  Fix: use --secret-scan-mode opt-in (warn only) or --secret-scan-mode strict (block export)",
+						secretScanModeFlag,
+					),
+				)
+			}
+		}
+
+		profile, err := session.ParseRedactionProfile(redactFlag)
+		if err != nil {
+			return errors.WrapValidationError(err.Error())
+		}
 
 		var data *session.Data
 
@@ -53,7 +81,7 @@ Validation:
 			}
 		} else {
 			// Load a saved session by ID.
-			store, err := session.NewStore()
+			store, err := openSessionStore()
 			if err != nil {
 				return errors.WrapValidationError(fmt.Sprintf("failed to open session store: %v", err))
 			}
@@ -79,7 +107,26 @@ Validation:
 			}
 		}
 
-		if err := session.ExportArchive(data, dest); err != nil {
+		redacted, report, err := session.RedactSession(data, profile)
+		if err != nil {
+			return fmt.Errorf("failed to apply redaction profile: %w", err)
+		}
+
+		if previewFlag {
+			printRedactionReport(cmd.OutOrStdout(), report)
+			return nil
+		}
+		if report.Profile != session.RedactionFull {
+			printRedactionReport(cmd.OutOrStdout(), report)
+		}
+
+		// Export with secret scanning options
+		archiveOpts := session.ArchiveOptions{
+			SecretScanMode:      scanMode,
+			SecretScanOverrides: secretScanOverrideFlag,
+			RedactionReport:     report,
+		}
+		if err := session.ExportArchiveWithOptions(redacted, dest, archiveOpts); err != nil {
 			return fmt.Errorf("failed to export session archive: %w", err)
 		}
 
@@ -93,6 +140,7 @@ Validation:
 		fmt.Printf("  Session ID:  %s\n", data.ID)
 		fmt.Printf("  Transaction: %s\n", data.TxHash)
 		fmt.Printf("  Network:     %s\n", data.Network)
+		fmt.Printf("  Redaction:   %s\n", report.Profile)
 		fmt.Printf("  Archive:     %s (%d bytes)\n", dest, size)
 		fmt.Printf("\nTo load on another machine:\n")
 		fmt.Printf("  Glassbox session load %s\n", dest)
@@ -130,7 +178,7 @@ the archive are available immediately without re-fetching from the network.`,
 		if upgraded, upgradeErr := session.UpgradeSessionData(data); upgradeErr != nil {
 			return upgradeErr
 		} else if upgraded {
-			fmt.Fprintf(os.Stderr, "Session schema upgraded to version %d.\n", session.SchemaVersion)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Session schema upgraded to version %d.\n", session.SchemaVersion)
 		}
 
 		report := session.ValidateIntegrity(data)
@@ -167,8 +215,36 @@ the archive are available immediately without re-fetching from the network.`,
 	},
 }
 
+// printRedactionReport renders a RedactionReport as a preview the operator
+// can review before an archive is written — or, when redaction was applied
+// silently to a real export, as a record of what changed.
+func printRedactionReport(w io.Writer, report *session.RedactionReport) {
+	fmt.Fprintf(w, "Redaction profile: %s\n", report.Profile)
+	for _, f := range report.Fields {
+		status := "kept"
+		switch f.Policy {
+		case session.PolicyRedact:
+			status = "removed"
+		case session.PolicyPseudonymize:
+			status = "pseudonymized"
+		}
+		if !f.Applied {
+			fmt.Fprintf(w, "  - %-22s %s (nothing to change)\n", f.Field, status)
+			continue
+		}
+		fmt.Fprintf(w, "  - %-22s %s: %s\n", f.Field, status, f.Sample)
+	}
+	if report.IdentifiersPseudonymized > 0 {
+		fmt.Fprintf(w, "%d unique identifier(s) pseudonymized.\n", report.IdentifiersPseudonymized)
+	}
+}
+
 func init() {
 	sessionShareCmd.Flags().StringP("output", "o", "", "Output archive path (default: auto-generated .gbx file)")
+	sessionShareCmd.Flags().String("redact", "full", "Redaction profile applied before export: strict, balanced, or full (default: full, unredacted)")
+	sessionShareCmd.Flags().Bool("preview", false, "Show what --redact would remove without writing an archive")
+	sessionShareCmd.Flags().String("secret-scan-mode", "", "Secret scanning mode: opt-in (warn only) or strict (block export)")
+	sessionShareCmd.Flags().StringArray("secret-scan-override", nil, "Paths allowed to contain secrets (for test fixtures); repeatable")
 
 	sessionCmd.AddCommand(sessionShareCmd)
 	sessionCmd.AddCommand(sessionLoadCmd)

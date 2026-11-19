@@ -6,13 +6,11 @@ package trace
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/dotandev/glassbox/internal/dwarf"
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/sourcemap"
 )
@@ -91,8 +89,8 @@ func MergeDebugSymbols(expectedContractID string) error {
 					file.Path, readErr)
 			}
 
-			mapper := sourcemap.NewFallbackMapper("")
-			result := mapper.Resolve(content, 0)
+			resolver := sourcemap.NewMappingResolver("", nil)
+			result := resolver.Resolve(content, 0)
 
 			if result.Quality == sourcemap.MappingQualityUnknown {
 				return fmt.Errorf(
@@ -107,7 +105,41 @@ func MergeDebugSymbols(expectedContractID string) error {
 			logger.Logger.Info("Successfully merged DWARF debug symbols",
 				"file", filepath.Base(file.Path),
 				"contract_id", expectedContractID[:16]+"...",
-				"quality", result.Quality.String())
+				"quality", result.Quality.String(),
+				"confidence", result.Confidence,
+				"match_kind", result.MatchKind)
+
+			if summary := result.UserSummary(); summary != "" {
+				// Prepend origin prefix so the developer immediately knows
+				// whether this location is in their own code, a registry
+				// crate, or a git dependency.
+				prefix := result.Origin.OriginPrefix()
+				if prefix != "" {
+					fmt.Fprintf(os.Stderr, "  Source mapping: %s %s\n", prefix, summary)
+				} else {
+					fmt.Fprintf(os.Stderr, "  Source mapping: %s\n", summary)
+				}
+			}
+
+			// Show the external URL (docs.rs / GitHub commit) when one was
+			// generated, in addition to (or instead of) the workspace link.
+			if result.ExternalURL != "" {
+				fmt.Fprintf(os.Stderr, "  External URL: %s\n", result.ExternalURL)
+			}
+
+			if result.SourceLink != "" {
+				fmt.Fprintf(os.Stderr, "  Source link: %s", result.SourceLink)
+				if result.LinkProvenance != "" {
+					fmt.Fprintf(os.Stderr, " (%s)", result.LinkProvenance)
+				}
+				fmt.Fprintln(os.Stderr)
+			} else if result.CandidateLink != "" {
+				fmt.Fprintf(os.Stderr, "  Candidate source link: %s", result.CandidateLink)
+				if result.LinkProvenance != "" {
+					fmt.Fprintf(os.Stderr, " (%s)", result.LinkProvenance)
+				}
+				fmt.Fprintln(os.Stderr)
+			}
 
 			if result.Warning != "" {
 				logger.Logger.Warn("Source mapping used fallback path",

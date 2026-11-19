@@ -17,26 +17,26 @@ import (
 // mockPkcs11Provider is a configurable test double for Pkcs11Provider.
 // Each field controls the behaviour of the corresponding method.
 type mockPkcs11Provider struct {
-	loadModuleErr  error
-	initializeErr  error
-	slots          []uint64
-	getSlotListErr error
-	tokenLabels    map[uint64]string
+	loadModuleErr   error
+	initializeErr   error
+	slots           []uint64
+	getSlotListErr  error
+	tokenLabels     map[uint64]string
 	getTokenInfoErr error
-	sessionHandle  uint64
-	openSessionErr error
-	loginErr       error
-	keyHandle      uint64
-	findKeyErr     error
-	signTestErr    error
-	finalizeErr    error
+	sessionHandle   uint64
+	openSessionErr  error
+	loginErr        error
+	keyHandle       uint64
+	findKeyErr      error
+	signTestErr     error
+	finalizeErr     error
 	closeSessionErr error
 }
 
-func (m *mockPkcs11Provider) LoadModule(_ string) error        { return m.loadModuleErr }
-func (m *mockPkcs11Provider) Initialize() error               { return m.initializeErr }
-func (m *mockPkcs11Provider) Finalize() error                 { return m.finalizeErr }
-func (m *mockPkcs11Provider) CloseSession(_ uint64) error     { return m.closeSessionErr }
+func (m *mockPkcs11Provider) LoadModule(_ string) error   { return m.loadModuleErr }
+func (m *mockPkcs11Provider) Initialize() error           { return m.initializeErr }
+func (m *mockPkcs11Provider) Finalize() error             { return m.finalizeErr }
+func (m *mockPkcs11Provider) CloseSession(_ uint64) error { return m.closeSessionErr }
 
 func (m *mockPkcs11Provider) GetSlotList(_ bool) ([]uint64, error) {
 	return m.slots, m.getSlotListErr
@@ -449,9 +449,9 @@ func TestMapPkcs11Error_OK(t *testing.T) {
 
 func TestMapPkcs11Error_KnownCodes(t *testing.T) {
 	cases := []struct {
-		rv          uint64
-		wantInMsg   string
-		wantInHint  string
+		rv         uint64
+		wantInMsg  string
+		wantInHint string
 	}{
 		{CKR_PIN_INCORRECT, "PIN is incorrect", "GLASSBOX_PKCS11_PIN"},
 		{CKR_PIN_LOCKED, "PIN is locked", "SO (Security Officer) PIN"},
@@ -572,15 +572,17 @@ func (r *retryMockProvider) LoadModule(path string) error {
 	}
 	return r.inner.LoadModule(path)
 }
-func (r *retryMockProvider) Initialize() error                              { return r.inner.Initialize() }
-func (r *retryMockProvider) GetSlotList(tp bool) ([]uint64, error)          { return r.inner.GetSlotList(tp) }
-func (r *retryMockProvider) GetTokenInfo(id uint64) (string, error)         { return r.inner.GetTokenInfo(id) }
-func (r *retryMockProvider) OpenSession(id uint64) (uint64, error)          { return r.inner.OpenSession(id) }
-func (r *retryMockProvider) Login(s uint64, pin string) error               { return r.inner.Login(s, pin) }
-func (r *retryMockProvider) FindKey(s uint64, l, id string) (uint64, error) { return r.inner.FindKey(s, l, id) }
-func (r *retryMockProvider) SignTest(s, k uint64, d []byte) error           { return r.inner.SignTest(s, k, d) }
-func (r *retryMockProvider) CloseSession(s uint64) error                    { return r.inner.CloseSession(s) }
-func (r *retryMockProvider) Finalize() error                                { return r.inner.Finalize() }
+func (r *retryMockProvider) Initialize() error                      { return r.inner.Initialize() }
+func (r *retryMockProvider) GetSlotList(tp bool) ([]uint64, error)  { return r.inner.GetSlotList(tp) }
+func (r *retryMockProvider) GetTokenInfo(id uint64) (string, error) { return r.inner.GetTokenInfo(id) }
+func (r *retryMockProvider) OpenSession(id uint64) (uint64, error)  { return r.inner.OpenSession(id) }
+func (r *retryMockProvider) Login(s uint64, pin string) error       { return r.inner.Login(s, pin) }
+func (r *retryMockProvider) FindKey(s uint64, l, id string) (uint64, error) {
+	return r.inner.FindKey(s, l, id)
+}
+func (r *retryMockProvider) SignTest(s, k uint64, d []byte) error { return r.inner.SignTest(s, k, d) }
+func (r *retryMockProvider) CloseSession(s uint64) error          { return r.inner.CloseSession(s) }
+func (r *retryMockProvider) Finalize() error                      { return r.inner.Finalize() }
 
 // blockingProvider blocks LoadModule until the context is cancelled.
 type blockingProvider struct {
@@ -592,12 +594,14 @@ func (b *blockingProvider) LoadModule(_ string) error {
 	time.Sleep(10 * time.Second)
 	return nil
 }
-func (b *blockingProvider) Initialize() error                              { return b.inner.Initialize() }
-func (b *blockingProvider) GetSlotList(tp bool) ([]uint64, error)          { return b.inner.GetSlotList(tp) }
-func (b *blockingProvider) GetTokenInfo(id uint64) (string, error)         { return b.inner.GetTokenInfo(id) }
-func (b *blockingProvider) OpenSession(id uint64) (uint64, error)          { return b.inner.OpenSession(id) }
-func (b *blockingProvider) Login(s uint64, pin string) error               { return b.inner.Login(s, pin) }
-func (b *blockingProvider) FindKey(s uint64, l, id string) (uint64, error) { return b.inner.FindKey(s, l, id) }
-func (b *blockingProvider) SignTest(s, k uint64, d []byte) error           { return b.inner.SignTest(s, k, d) }
-func (b *blockingProvider) CloseSession(s uint64) error                    { return b.inner.CloseSession(s) }
-func (b *blockingProvider) Finalize() error                                { return b.inner.Finalize() }
+func (b *blockingProvider) Initialize() error                      { return b.inner.Initialize() }
+func (b *blockingProvider) GetSlotList(tp bool) ([]uint64, error)  { return b.inner.GetSlotList(tp) }
+func (b *blockingProvider) GetTokenInfo(id uint64) (string, error) { return b.inner.GetTokenInfo(id) }
+func (b *blockingProvider) OpenSession(id uint64) (uint64, error)  { return b.inner.OpenSession(id) }
+func (b *blockingProvider) Login(s uint64, pin string) error       { return b.inner.Login(s, pin) }
+func (b *blockingProvider) FindKey(s uint64, l, id string) (uint64, error) {
+	return b.inner.FindKey(s, l, id)
+}
+func (b *blockingProvider) SignTest(s, k uint64, d []byte) error { return b.inner.SignTest(s, k, d) }
+func (b *blockingProvider) CloseSession(s uint64) error          { return b.inner.CloseSession(s) }
+func (b *blockingProvider) Finalize() error                      { return b.inner.Finalize() }

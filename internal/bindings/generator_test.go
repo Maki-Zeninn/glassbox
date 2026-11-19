@@ -5,7 +5,9 @@ package bindings
 
 import (
 	"testing"
+	"time"
 
+	"github.com/dotandev/glassbox/internal/abi"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -104,6 +106,130 @@ func TestToPascalCase(t *testing.T) {
 			result := toPascalCase(tt.input)
 			if result != tt.expected {
 				t.Errorf("toPascalCase(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestByteStableGeneration(t *testing.T) {
+	// Create a simple contract spec for testing
+	spec := &abi.ContractSpec{
+		Functions: []xdr.ScSpecFunctionV0{
+			{
+				Name: xdr.Scsymbol("transfer"),
+				Inputs: []xdr.ScSpecFunctionInputV0{
+					{Name: xdr.Scsymbol("from"), Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress}},
+					{Name: xdr.Scsymbol("to"), Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress}},
+					{Name: xdr.Scsymbol("amount"), Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeI128}},
+				},
+				Outputs: []xdr.ScSpecTypeDef{{Type: xdr.ScSpecTypeScSpecTypeVoid}},
+			},
+			{
+				Name: xdr.Scsymbol("balance"),
+				Inputs: []xdr.ScSpecFunctionInputV0{
+					{Name: xdr.Scsymbol("account"), Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress}},
+				},
+				Outputs: []xdr.ScSpecTypeDef{{Type: xdr.ScSpecTypeScSpecTypeI128}},
+			},
+		},
+		Structs: []xdr.ScSpecUdtStructV0{
+			{
+				Name: xdr.Scsymbol("Account"),
+				Fields: []xdr.ScSpecUdtStructFieldV0{
+					{Name: xdr.Scsymbol("address"), Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress}},
+					{Name: xdr.Scsymbol("balance"), Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeI128}},
+				},
+			},
+		},
+	}
+
+	// Generate twice with fixed timestamp to ensure byte-stability
+	fixedTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	var firstGeneration []GeneratedFile
+	var secondGeneration []GeneratedFile
+
+	for i := 0; i < 2; i++ {
+		cfg := GeneratorConfig{
+			SpecBytes:               []byte{}, // Will be set via spec directly
+			OutputDir:               "",
+			PackageName:             "test-contract",
+			ContractID:              "TEST_CONTRACT_ID",
+			Network:                 "testnet",
+			RuntimeTarget:           RuntimeNode,
+			IncludeDebugMeta:        false,
+			NoEmbedArtifactMetadata: false,
+			fixedGenerationTime:     fixedTime,
+		}
+
+		gen := &Generator{config: cfg, spec: spec}
+		gen.sortSpec() // Ensure sorting is applied
+
+		files := []GeneratedFile{
+			{Path: "types.ts", Content: normalizeLineEndings(gen.generateTypes())},
+			{Path: "metadata.ts", Content: normalizeLineEndings(gen.generateMetadata())},
+			{Path: "client.ts", Content: normalizeLineEndings(gen.generateClient())},
+			{Path: "Glassbox-integration.ts", Content: normalizeLineEndings(gen.generateErstIntegration())},
+			{Path: "index.ts", Content: normalizeLineEndings(gen.generateIndex())},
+			{Path: "package.json", Content: normalizeLineEndings(gen.generatePackageJSON())},
+			{Path: "README.md", Content: normalizeLineEndings(gen.generateReadme())},
+		}
+
+		if i == 0 {
+			firstGeneration = files
+		} else {
+			secondGeneration = files
+		}
+	}
+
+	// Compare all files for byte-identity
+	if len(firstGeneration) != len(secondGeneration) {
+		t.Fatalf("generation count mismatch: first=%d, second=%d", len(firstGeneration), len(secondGeneration))
+	}
+
+	for i := range firstGeneration {
+		if firstGeneration[i].Path != secondGeneration[i].Path {
+			t.Errorf("file path mismatch at index %d: %s != %s", i, firstGeneration[i].Path, secondGeneration[i].Path)
+		}
+		if firstGeneration[i].Content != secondGeneration[i].Content {
+			t.Errorf("file content mismatch for %s: generations are not byte-stable", firstGeneration[i].Path)
+		}
+	}
+}
+
+func TestNormalizeLineEndings(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "CRLF to LF",
+			input:    "line1\r\nline2\r\nline3",
+			expected: "line1\nline2\nline3",
+		},
+		{
+			name:     "Already LF",
+			input:    "line1\nline2\nline3",
+			expected: "line1\nline2\nline3",
+		},
+		{
+			name:     "Mixed",
+			input:    "line1\r\nline2\nline3\r\n",
+			expected: "line1\nline2\nline3\n",
+		},
+		{
+			name:     "Empty",
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeLineEndings(tt.input)
+			if result != tt.expected {
+				t.Errorf("normalizeLineEndings() = %q, want %q", result, tt.expected)
 			}
 		})
 	}

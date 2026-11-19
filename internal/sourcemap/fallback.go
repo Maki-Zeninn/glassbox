@@ -57,18 +57,44 @@ func (q MappingQuality) String() string {
 // FallbackResult is the output of the fallback mapping pipeline.
 type FallbackResult struct {
 	// File is the resolved source file path (may be relative).
-	File string
+	File string `json:"file"`
 	// Line is the 1-based source line number (0 when unknown).
-	Line int
+	Line int `json:"line"`
 	// Column is the 1-based column (0 when unknown).
-	Column int
+	Column int `json:"column"`
 	// Function is the demangled function name (empty when unknown).
-	Function string
+	Function string `json:"function,omitempty"`
 	// Quality describes how the location was resolved.
-	Quality MappingQuality
+	Quality MappingQuality `json:"quality"`
 	// Warning is a human-readable message emitted when fallback was used.
 	// Empty when Quality == MappingQualityFull.
-	Warning string
+	Warning string `json:"warning,omitempty"`
+	// Confidence is a stable 0–100 score derived from MatchKind and location detail.
+	Confidence int `json:"confidence"`
+	// MatchKind classifies the resolution mechanism (exact_offset, function, …).
+	MatchKind MatchKind `json:"match_kind"`
+	// Evidence retains scoring inputs for debugging and JSON consumers.
+	Evidence MappingEvidence `json:"evidence"`
+	// LinkPresentation indicates whether SourceLink or CandidateLink was populated.
+	LinkPresentation LinkPresentation `json:"link_presentation"`
+	// SourceLink is set when LinkPresentation is auto and a URL could be resolved.
+	SourceLink string `json:"source_link,omitempty"`
+	// CandidateLink is set when confidence is below auto-link threshold.
+	CandidateLink string `json:"candidate_link,omitempty"`
+	// LinkProvenance is rendered beside source links so reports identify the replay revision.
+	LinkProvenance string `json:"link_provenance,omitempty"`
+	// DetailedConfidence provides structured confidence information with reason codes.
+	DetailedConfidence *DetailedConfidence `json:"detailed_confidence,omitempty"`
+	// Origin classifies where the resolved source file came from.
+	// Use OriginPrefix() to get the terminal display prefix ([local], [crates.io], [git]).
+	// Populated by MappingResolver.Resolve after source-path classification.
+	Origin SourceOrigin `json:"origin,omitempty"`
+	// ExternalURL is a web-accessible permalink for the source location.
+	// Empty for local workspace files (OriginLocal) and unknown origins.
+	// For registry crates it is a docs.rs URL; for git dependencies it
+	// points to the specific commit in the remote repository.
+	// When non-empty the SARIF writer uses this as the artifactLocation.uri.
+	ExternalURL string `json:"external_url,omitempty"`
 }
 
 // FallbackMapper resolves source locations for WASM binaries that may lack
@@ -98,7 +124,7 @@ func (m *FallbackMapper) Resolve(wasmData []byte, addr uint64) *FallbackResult {
 	// silently produce no results anyway, but surfacing a clear unknown result
 	// with a remediation warning is more useful than a silent no-op.
 	if len(wasmData) < 8 {
-		return &FallbackResult{
+		result := &FallbackResult{
 			Quality: MappingQualityUnknown,
 			Warning: fmt.Sprintf(
 				"[sourcemap] WASM data is nil or too small (%d bytes) to contain valid content — "+
@@ -108,6 +134,8 @@ func (m *FallbackMapper) Resolve(wasmData []byte, addr uint64) *FallbackResult {
 				len(wasmData), addr,
 			),
 		}
+		applyConfidence(result, addr, MatchUnknown, "input_guard", "")
+		return result
 	}
 
 	// ── Stage 1: full DWARF ──────────────────────────────────────────────────
@@ -126,15 +154,17 @@ func (m *FallbackMapper) Resolve(wasmData []byte, addr uint64) *FallbackResult {
 	}
 
 	// ── Stage 4: Cargo manifest discovery ───────────────────────────────────
-	if result := m.tryCargoDiscovery(wasmData); result != nil {
+	if result := m.tryCargoDiscovery(wasmData, addr); result != nil {
 		return result
 	}
 
 	// ── Stage 5: nothing found ───────────────────────────────────────────────
-	return &FallbackResult{
+	result := &FallbackResult{
 		Quality: MappingQualityUnknown,
 		Warning: capabilityWarning(wasmData, addr),
 	}
+	applyConfidence(result, addr, MatchUnknown, "none", "")
+	return result
 }
 
 // capabilityWarning builds a precise, actionable message explaining why no
@@ -176,25 +206,49 @@ func (m *FallbackMapper) tryFullDWARF(wasmData []byte, addr uint64) *FallbackRes
 	}
 
 	loc, err := parser.GetSourceLocation(addr)
-	if err != nil || loc == nil {
-		return nil
+	if err == nil && loc != nil {
+		fn := ""
+		if sp, err := parser.FindSubprogramAt(addr); err == nil && sp != nil {
+			fn = sp.DemangledName
+			if fn == "" {
+				fn = sp.Name
+			}
+		}
+		result := &FallbackResult{
+			File:     m.resolveFilePath(loc.File),
+			Line:     loc.Line,
+			Column:   loc.Column,
+			Function: fn,
+			Quality:  MappingQualityFull,
+		}
+		applyConfidence(result, addr, MatchExactOffset, "full_dwarf", "")
+		return result
 	}
 
-	fn := ""
 	if sp, err := parser.FindSubprogramAt(addr); err == nil && sp != nil {
-		fn = sp.DemangledName
+		fn := sp.DemangledName
 		if fn == "" {
 			fn = sp.Name
 		}
+		warning := fmt.Sprintf(
+			"[sourcemap] function-level DWARF match for address 0x%x in %q; "+
+				"exact line mapping unavailable. Recompile with debug = true for precise lines.",
+			addr, fn,
+		)
+		logger.Logger.Warn("Function-level DWARF fallback used",
+			"function", fn, "addr", fmt.Sprintf("0x%x", addr))
+		result := &FallbackResult{
+			File:     m.resolveFilePath(sp.File),
+			Line:     sp.Line,
+			Function: fn,
+			Quality:  MappingQualityPartial,
+			Warning:  warning,
+		}
+		applyConfidence(result, addr, MatchFunction, "full_dwarf", "")
+		return result
 	}
 
-	return &FallbackResult{
-		File:     m.resolveFilePath(loc.File),
-		Line:     loc.Line,
-		Column:   loc.Column,
-		Function: fn,
-		Quality:  MappingQualityFull,
-	}
+	return nil
 }
 
 // tryPartialDWARF extracts file names from DWARF line-number tables even when
@@ -235,11 +289,13 @@ func (m *FallbackMapper) tryPartialDWARF(wasmData []byte, addr uint64) *Fallback
 	)
 	logger.Logger.Warn("Partial DWARF fallback used", "file", best, "addr", fmt.Sprintf("0x%x", addr))
 
-	return &FallbackResult{
+	result := &FallbackResult{
 		File:    m.resolveFilePath(best),
 		Quality: MappingQualityPartial,
 		Warning: warning,
 	}
+	applyConfidence(result, addr, MatchLineTable, "partial_dwarf", "")
+	return result
 }
 
 // trySymbolHeuristics infers a source path from Rust mangled symbol names
@@ -273,11 +329,13 @@ func (m *FallbackMapper) trySymbolHeuristics(wasmData []byte, addr uint64) *Fall
 			)
 			logger.Logger.Warn("Symbol heuristic fallback used",
 				"package", pkgName, "file", c, "addr", fmt.Sprintf("0x%x", addr))
-			return &FallbackResult{
+			result := &FallbackResult{
 				File:    c,
 				Quality: MappingQualityHeuristic,
 				Warning: warning,
 			}
+			applyConfidence(result, addr, MatchHeuristic, "symbol_heuristic", pkgName)
+			return result
 		}
 	}
 
@@ -292,16 +350,18 @@ func (m *FallbackMapper) trySymbolHeuristics(wasmData []byte, addr uint64) *Fall
 	)
 	logger.Logger.Warn("Symbol heuristic fallback (file not found)",
 		"package", pkgName, "inferred", inferred)
-	return &FallbackResult{
+	result := &FallbackResult{
 		File:    inferred,
 		Quality: MappingQualityHeuristic,
 		Warning: warning,
 	}
+	applyConfidence(result, addr, MatchHeuristic, "symbol_heuristic", pkgName)
+	return result
 }
 
 // tryCargoDiscovery walks the project root for Cargo.toml files and returns
 // a heuristic result pointing at the first package's src/lib.rs.
-func (m *FallbackMapper) tryCargoDiscovery(wasmData []byte) *FallbackResult {
+func (m *FallbackMapper) tryCargoDiscovery(wasmData []byte, addr uint64) *FallbackResult {
 	manifests := findCargoManifests(m.ProjectRoot)
 	if len(manifests) == 0 {
 		return nil
@@ -330,11 +390,13 @@ func (m *FallbackMapper) tryCargoDiscovery(wasmData []byte) *FallbackResult {
 		)
 		logger.Logger.Warn("Cargo manifest fallback used",
 			"manifest", manifest, "package", pkg, "src", srcFile)
-		return &FallbackResult{
+		result := &FallbackResult{
 			File:    srcFile,
 			Quality: MappingQualityHeuristic,
 			Warning: warning,
 		}
+		applyConfidence(result, addr, MatchHeuristic, "cargo_manifest", pkg)
+		return result
 	}
 	return nil
 }

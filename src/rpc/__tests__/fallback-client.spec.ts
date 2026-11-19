@@ -30,7 +30,7 @@ describe('FallbackRPCClient', () => {
 
     beforeEach(() => {
         // Clear mock registry
-        mock = new MockAdapter(axios);
+        mock = new MockAdapter(axios as any);
         client = new FallbackRPCClient(config);
         tempDir = mkdtempSync(join(tmpdir(), 'fallback-rpc-client-'));
     });

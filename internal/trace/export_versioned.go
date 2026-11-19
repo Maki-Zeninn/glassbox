@@ -72,14 +72,24 @@ type exportJSONEnvelope struct {
 // state and the same (schemaVersion, generatedAt) arguments produces
 // identical bytes.
 //
-// schemaVersion is written verbatim; no validation is performed here so
-// callers (e.g. tests) can deliberately write unsupported versions to verify
-// that LoadVersionedTrace rejects them properly.
+// schemaVersion is validated before writing so callers receive an actionable
+// error immediately rather than producing a file that LoadVersionedTrace will
+// reject. Tests that deliberately write unsupported versions must use
+// ExportJSONUnchecked instead.
 func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time) ([]byte, error) {
 	if t == nil {
 		return nil, fmt.Errorf(
 			"cannot export nil trace — ExportJSON requires a valid *ExecutionTrace\n" +
 				"  Fix: ensure the trace object was initialised with NewExecutionTrace()")
+	}
+
+	// Validate the schema version before producing any bytes so the caller
+	// learns about unsupported values before the file is written to disk.
+	if err := ValidateJSONSchemaVersion(schemaVersion); err != nil {
+		return nil, fmt.Errorf(
+			"ExportJSON called with invalid schema_version %q: %w\n"+
+				"  Fix: use trace.CurrentJSONSchemaVersion as the schemaVersion argument",
+			schemaVersion, err)
 	}
 
 	payload := exportJSONEnvelopePayload{
@@ -102,6 +112,47 @@ func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time)
 		// an export timestamp and breaks determinism checks).
 		GeneratedAt: generatedAt.UTC().Truncate(time.Second),
 		Trace:       payload,
+	}
+
+	data, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to marshal trace as ExportJSON envelope: %w\n"+
+				"  This indicates the trace contains non-serialisable data\n"+
+				"  Check for circular references or invalid field values in the trace states",
+			err)
+	}
+	return data, nil
+}
+
+// ExportJSONUnchecked is identical to ExportJSON but skips schema version
+// validation. It exists solely for tests that need to produce files with
+// deliberately unsupported schema versions to exercise error-handling paths
+// in LoadVersionedTrace. Production code must use ExportJSON.
+func (t *ExecutionTrace) ExportJSONUnchecked(schemaVersion string, generatedAt time.Time) ([]byte, error) {
+	if t == nil {
+		return nil, fmt.Errorf(
+			"cannot export nil trace — ExportJSONUnchecked requires a valid *ExecutionTrace\n" +
+				"  Fix: ensure the trace object was initialised with NewExecutionTrace()")
+	}
+
+	payload := exportJSONEnvelopePayload{
+		TransactionHash:  fingerprintTxHash(t.TransactionHash),
+		StartTime:        t.StartTime,
+		EndTime:          t.EndTime,
+		States:           t.States,
+		Snapshots:        t.Snapshots,
+		DiagnosticEvents: t.DiagnosticEvents,
+		DecodedEvents:    t.DecodedEvents,
+		Annotations:      t.Annotations,
+		CurrentStep:      t.CurrentStep,
+		SnapshotInterval: t.SnapshotInterval,
+	}
+
+	envelope := exportJSONEnvelope{
+		SchemaVersion: schemaVersion,
+		GeneratedAt:   generatedAt.UTC().Truncate(time.Second),
+		Trace:         payload,
 	}
 
 	data, err := json.MarshalIndent(envelope, "", "  ")

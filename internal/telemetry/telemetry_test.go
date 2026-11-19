@@ -271,3 +271,37 @@ func TestSanitizeValue_HashKey_FingerprintNotFullHash(t *testing.T) {
 		t.Errorf("fingerprint length = %d, want 32", len(got))
 	}
 }
+
+func TestCorrelationID(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Initially empty
+	if id := CorrelationIDFromContext(ctx); id != "" {
+		t.Fatalf("expected empty correlation ID from background context, got %q", id)
+	}
+
+	// 2. EnsureCorrelationID generates a new ID
+	ctx1, id1 := EnsureCorrelationID(ctx)
+	if id1 == "" {
+		t.Fatal("EnsureCorrelationID generated empty ID")
+	}
+	if CorrelationIDFromContext(ctx1) != id1 {
+		t.Fatalf("CorrelationIDFromContext = %q, want %q", CorrelationIDFromContext(ctx1), id1)
+	}
+
+	// 3. EnsureCorrelationID is idempotent on existing context
+	ctx1Again, id1Again := EnsureCorrelationID(ctx1)
+	if id1Again != id1 {
+		t.Fatalf("EnsureCorrelationID changed existing ID from %q to %q", id1, id1Again)
+	}
+	_ = ctx1Again
+
+	// 4. Concurrent contexts receive distinct IDs
+	ctx2, id2 := EnsureCorrelationID(context.Background())
+	if id1 == id2 {
+		t.Fatalf("separate EnsureCorrelationID calls produced non-unique IDs: %q", id1)
+	}
+	if CorrelationIDFromContext(ctx2) != id2 {
+		t.Fatalf("CorrelationIDFromContext for ctx2 = %q, want %q", CorrelationIDFromContext(ctx2), id2)
+	}
+}

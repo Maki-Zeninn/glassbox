@@ -290,6 +290,13 @@ func (c *Config) parseTOML(content string) error {
 				return errors.WrapValidationError("telemetry_anonymized must be a boolean")
 			}
 			c.TelemetryAnonymizedConfigured = true
+		case "telemetry_sample_rate":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return errors.WrapValidationError("telemetry_sample_rate must be a number between 0.0 and 1.0")
+			}
+			c.TelemetrySampleRate = f
+			c.TelemetrySampleRateSet = true
 		case "request_timeout":
 			n, err := strconv.Atoi(value)
 			if err != nil {

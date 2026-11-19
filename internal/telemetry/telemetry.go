@@ -5,6 +5,7 @@ package telemetry
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -142,8 +143,9 @@ func getVersion() string {
 
 // getFeatureFlags returns a list of enabled feature flags.
 // Only non-sensitive, user-facing flags are included.
+// Always returns a non-nil slice (may be empty).
 func getFeatureFlags() []string {
-	var flags []string
+	flags := make([]string, 0)
 
 	// Check for optional features that are enabled
 	// These are intentionally limited to avoid exposing sensitive data
@@ -163,9 +165,29 @@ func getFeatureFlags() []string {
 	return flags
 }
 
+// IsTelemetryEnabled returns the current effective telemetry enabled state using
+// the consent resolution hierarchy:
+//
+//  1. GLASSBOX_TELEMETRY environment variable (takes highest precedence)
+//  2. ~/.Glassbox/telemetry_consent.json consent file
+//  3. Runtime flag set via Init() (for backwards-compat with --telemetry flag)
+//  4. Default: disabled
+//
+// This is the single authoritative check used by RecordCommandUsage and
+// should be used wherever code needs to decide whether to emit telemetry.
+func IsTelemetryEnabled() bool {
+	ec := ResolveConsent()
+	// Env or consent file takes precedence over the runtime flag.
+	if ec.Source != ConsentSourceDefault {
+		return ec.Enabled
+	}
+	// Fall back to the runtime flag set during Init().
+	return commandTelemetryEnabled
+}
+
 // RecordCommandUsage emits a lightweight command usage event with environment metadata.
 func RecordCommandUsage(ctx context.Context, command string) {
-	if !commandTelemetryEnabled {
+	if !IsTelemetryEnabled() {
 		return
 	}
 
@@ -184,10 +206,14 @@ func RecordCommandUsage(ctx context.Context, command string) {
 	command = sanitizeCommandName(command)
 
 	// Set core command attributes
-	span.SetAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("command.name", command),
 		attribute.Bool("telemetry.anonymized", commandTelemetryAnonymized),
-	)
+	}
+	if corrID := CorrelationIDFromContext(ctx); corrID != "" {
+		attrs = append(attrs, attribute.String("correlation_id", corrID))
+	}
+	span.SetAttributes(attrs...)
 
 	// Add environment metadata (only if not anonymized)
 	if !commandTelemetryAnonymized {
@@ -206,6 +232,47 @@ func RecordCommandUsage(ctx context.Context, command string) {
 	}
 
 	span.AddEvent("command.usage")
+}
+
+type correlationKey struct{}
+
+// WithCorrelationID returns a new Context carrying the given correlation ID.
+func WithCorrelationID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, correlationKey{}, id)
+}
+
+// CorrelationIDFromContext extracts the correlation ID from ctx, returning "" if not found.
+func CorrelationIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if id, ok := ctx.Value(correlationKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
+// NewCorrelationID generates a unique per-operation correlation ID.
+func NewCorrelationID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("corr-%x", b)
+}
+
+// EnsureCorrelationID returns a Context with a correlation ID and the correlation ID string itself.
+// If ctx already has a correlation ID, it returns ctx unchanged along with that ID.
+func EnsureCorrelationID(ctx context.Context) (context.Context, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if id := CorrelationIDFromContext(ctx); id != "" {
+		return ctx, id
+	}
+	id := NewCorrelationID()
+	return WithCorrelationID(ctx, id), id
 }
 
 // GetEnvMetadata returns the current environment metadata.

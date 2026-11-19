@@ -1,0 +1,22 @@
+Glassbox Trace Export
+=====================
+
+Transaction: 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+Steps:       1
+Started:     2026-01-01T00:00:00Z
+Ended:       2026-01-01T00:00:05Z
+
+Step 0: contract_call
+  Operation: contract_call
+  Event:     contract_call
+  Contract:  CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  Function:  swap
+  Arguments: []
+  Cost:      source=observed, cpu=125000, memory=2048 bytes, operations=3, estimated_fee=750 stroops
+    * mem_alloc [mem]: units=16 unit_cost=128 total=2048
+    * wasm_insns [cpu]: units=1200 unit_cost=4 total=4800
+    - operation: contract_call
+    - contract: CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    - function: swap
+    - cost: source=observed, cpu=125000, memory=2048 bytes, operations=3, estimated_fee=750 stroops
+

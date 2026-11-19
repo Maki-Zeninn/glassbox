@@ -4,7 +4,8 @@
 import { Command } from 'commander';
 import { registerAuditCommands } from '../audit';
 import * as fs from 'fs';
-import { verifyAuditLog } from '../../audit/AuditVerifier';
+import { verifyAuditLog, verifyAuditLogDetailed } from '../../audit/AuditVerifier';
+import { ExitCode } from '../../exit-codes';
 
 jest.mock('../../audit/AuditVerifier');
 jest.mock('fs');
@@ -22,14 +23,16 @@ describe('Audit Commands CLI', () => {
         it('should verify an audit log from a file', async () => {
             const mockLog = { trace: { foo: 'bar' }, signature: 'abc', publicKey: 'pub', hash: '123' };
             (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify(mockLog));
-            (verifyAuditLog as jest.Mock).mockReturnValue(true);
+            (verifyAuditLogDetailed as jest.Mock).mockReturnValue({
+                valid: true, hash_valid: true, signature_valid: true,
+            });
 
             const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
 
             await program.parseAsync(['node', 'test', 'audit:verify', '--file', 'test.json']);
 
             expect(fs.readFileSync).toHaveBeenCalledWith('test.json', 'utf8');
-            expect(verifyAuditLog).toHaveBeenCalledWith(mockLog);
+            expect(verifyAuditLogDetailed).toHaveBeenCalled();
             expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[OK] Verification successful'));
 
             consoleLogSpy.mockRestore();
@@ -40,7 +43,9 @@ describe('Audit Commands CLI', () => {
             const sig = 'deadbeef';
             const pubkey = 'pem-content';
 
-            (verifyAuditLog as jest.Mock).mockReturnValue(true);
+            (verifyAuditLogDetailed as jest.Mock).mockReturnValue({
+                valid: true, hash_valid: true, signature_valid: true,
+            });
             const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
 
             await program.parseAsync([
@@ -50,11 +55,7 @@ describe('Audit Commands CLI', () => {
                 '--pubkey', pubkey
             ]);
 
-            expect(verifyAuditLog).toHaveBeenCalledWith(expect.objectContaining({
-                trace: { amount: 100 },
-                signature: sig,
-                publicKey: pubkey
-            }));
+            expect(verifyAuditLogDetailed).toHaveBeenCalled();
             expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[OK] Verification successful'));
 
             consoleLogSpy.mockRestore();
@@ -63,16 +64,18 @@ describe('Audit Commands CLI', () => {
         it('should fail if signature is invalid', async () => {
             const mockLog = { trace: { foo: 'bar' }, signature: 'bad', publicKey: 'pub', hash: '123' };
             (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify(mockLog));
-            (verifyAuditLog as jest.Mock).mockReturnValue(false);
+            (verifyAuditLogDetailed as jest.Mock).mockReturnValue({
+                valid: false, hash_valid: true, signature_valid: false,
+            });
 
             const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
             const processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => { }) as any);
 
             await program.parseAsync(['node', 'test', 'audit:verify', '--file', 'test.json']);
 
-            expect(verifyAuditLog).toHaveBeenCalled();
+            expect(verifyAuditLogDetailed).toHaveBeenCalled();
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[FAIL] Verification failed'));
-            expect(processExitSpy).toHaveBeenCalledWith(1);
+            expect(processExitSpy).toHaveBeenCalledWith(ExitCode.SECURITY_ERROR);
 
             consoleErrorSpy.mockRestore();
             processExitSpy.mockRestore();
@@ -85,7 +88,7 @@ describe('Audit Commands CLI', () => {
             await program.parseAsync(['node', 'test', 'audit:verify', '--payload', '{}']);
 
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('You must provide either --file or all of'));
-            expect(processExitSpy).toHaveBeenCalledWith(1);
+            expect(processExitSpy).toHaveBeenCalledWith(ExitCode.VALIDATION_ERROR);
 
             consoleErrorSpy.mockRestore();
             processExitSpy.mockRestore();

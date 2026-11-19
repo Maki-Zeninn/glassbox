@@ -1,0 +1,104 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# changelog-fragment-check.yml
+#
+# Enforces the rule: every PR that touches a user-visible surface must include
+# a changelog fragment in changelog/fragments/.
+#
+# User-visible surfaces: CLI flags/commands, stable error codes, JSON output
+# schemas, TypeScript public API, VS Code extension public API, session format,
+# manifest format, SBOM format, bindings contract, API compatibility snapshots.
+#
+# Exemptions (automatically detected, no override needed):
+#   - Pure test changes (*_test.go, testdata/, tests/)
+#   - Internal refactors (internal packages not on a user-visible surface)
+#   - Documentation changes (docs/** excluding docs/schema/)
+#   - CI/tooling changes (.github/, scripts/, Makefile, go.sum, etc.)
+#
+# Override mechanisms:
+#   - PR label "no-fragment": sets CHANGELOG_SKIP=1, waives the requirement
+#   - File .changelog-override containing "no-fragment" in the repo root
+#
+# Acceptance criteria verified by this workflow:
+#   - User-visible changes fail without a fragment → fail with clear message
+#   - Internal-only changes pass without a fragment
+#   - Fragment present → pass
+#   - "no-fragment" label present → pass
+
+name: Changelog Fragment Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: changelog-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  fragment-check:
+    name: Changelog fragment required?
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch enough history to compare against base branch.
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Collect changed files
+        id: changed
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}"...HEAD > /tmp/changed-files.txt
+          echo "Changed files:"
+          cat /tmp/changed-files.txt
+
+      - name: Check for no-fragment label
+        id: label_check
+        run: |
+          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+          if echo "${LABELS}" | python3 -c "
+          import json, sys
+          labels = json.load(sys.stdin)
+          if 'no-fragment' in labels:
+              print('skip=1')
+          else:
+              print('skip=0')
+          "; then
+            SKIP=$(echo "${LABELS}" | python3 -c "
+          import json, sys
+          labels = json.load(sys.stdin)
+          print('1' if 'no-fragment' in labels else '0')
+          ")
+            echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate existing fragments
+        # Always validate fragments that are present regardless of whether new
+        # ones are required. This catches malformed fragments added in any PR.
+        run: |
+          bash scripts/validate-fragments.sh
+
+      - name: Check fragment requirement
+        env:
+          CHANGELOG_SKIP: ${{ steps.label_check.outputs.skip }}
+          FRAG_DIR: changelog/fragments
+        run: |
+          bash scripts/check-fragment-required.sh /tmp/changed-files.txt
+
+      - name: Annotate on failure
+        if: failure()
+        run: |
+          echo "::error title=Changelog fragment required::This PR changes user-visible surfaces without a changelog fragment. See docs/changelog-fragments.md."

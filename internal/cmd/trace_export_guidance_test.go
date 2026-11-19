@@ -469,6 +469,9 @@ func resetTraceFlags() {
 	traceFormatAlias = ""
 	traceExportMarkdown = ""
 	traceAnnotationsFlag = ""
+	traceAnnotationsExportPath = ""
+	traceBookmarksOnConflict = "fail"
+	traceBookmarksPreview = false
 	traceGasModelPath = ""
 	traceVerbosity = "normal"
 	traceComments = nil

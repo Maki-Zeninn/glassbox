@@ -32,7 +32,7 @@ func (m *mockRunner) Close() error {
 	return nil
 }
 
-func createTestTrace(numSteps int) *ExecutionTrace {
+func createRefreshTestTrace(numSteps int) *ExecutionTrace {
 	trace := NewExecutionTrace("test_tx_hash", DefaultSnapshotInterval)
 	
 	for i := 0; i < numSteps; i++ {
@@ -83,7 +83,7 @@ func TestRefresh_InvalidRequest(t *testing.T) {
 		{
 			name: "nil updated snapshot",
 			req: &RefreshRequest{
-				OriginalTrace:   createTestTrace(10),
+				OriginalTrace:   createRefreshTestTrace(10),
 				UpdatedSnapshot: nil,
 				StartStep:       0,
 				EndStep:         5,
@@ -92,7 +92,7 @@ func TestRefresh_InvalidRequest(t *testing.T) {
 		{
 			name: "invalid start step",
 			req: &RefreshRequest{
-				OriginalTrace:   createTestTrace(10),
+				OriginalTrace:   createRefreshTestTrace(10),
 				UpdatedSnapshot: snapshot.FromMap(map[string]string{"k": "v"}),
 				StartStep:       -1,
 				EndStep:         5,
@@ -101,7 +101,7 @@ func TestRefresh_InvalidRequest(t *testing.T) {
 		{
 			name: "start step >= trace length",
 			req: &RefreshRequest{
-				OriginalTrace:   createTestTrace(10),
+				OriginalTrace:   createRefreshTestTrace(10),
 				UpdatedSnapshot: snapshot.FromMap(map[string]string{"k": "v"}),
 				StartStep:       10,
 				EndStep:         15,
@@ -110,7 +110,7 @@ func TestRefresh_InvalidRequest(t *testing.T) {
 		{
 			name: "end step < start step",
 			req: &RefreshRequest{
-				OriginalTrace:   createTestTrace(10),
+				OriginalTrace:   createRefreshTestTrace(10),
 				UpdatedSnapshot: snapshot.FromMap(map[string]string{"k": "v"}),
 				StartStep:       5,
 				EndStep:         3,
@@ -133,7 +133,7 @@ func TestRefresh_Success(t *testing.T) {
 	refresher := NewIncrementalRefresher(runner)
 	ctx := context.Background()
 	
-	originalTrace := createTestTrace(20)
+	originalTrace := createRefreshTestTrace(20)
 	updatedSnapshot := snapshot.FromMap(map[string]string{
 		"key1": "new_value",
 	})
@@ -171,7 +171,7 @@ func TestRefresh_PreserveUnaffected(t *testing.T) {
 	refresher := NewIncrementalRefresher(runner)
 	ctx := context.Background()
 	
-	originalTrace := createTestTrace(20)
+	originalTrace := createRefreshTestTrace(20)
 	updatedSnapshot := snapshot.FromMap(map[string]string{
 		"key1": "new_value",
 	})
@@ -215,10 +215,10 @@ func TestRefresh_MetadataPreserved(t *testing.T) {
 	refresher := NewIncrementalRefresher(runner)
 	ctx := context.Background()
 	
-	originalTrace := createTestTrace(10)
+	originalTrace := createRefreshTestTrace(10)
 	originalTrace.TransactionHash = "original_hash_123"
 	originalTrace.Annotations = TraceAnnotations{
-		Tags: map[string]string{"env": "test"},
+		SessionMetadata: map[string]string{"env": "test"},
 	}
 	
 	updatedSnapshot := snapshot.FromMap(map[string]string{"k": "v"})
@@ -240,7 +240,7 @@ func TestRefresh_MetadataPreserved(t *testing.T) {
 	if result.UpdatedTrace.TransactionHash != originalTrace.TransactionHash {
 		t.Error("transaction hash not preserved")
 	}
-	if result.UpdatedTrace.Annotations.Tags["env"] != "test" {
+	if result.UpdatedTrace.Annotations.SessionMetadata["env"] != "test" {
 		t.Error("annotations not preserved")
 	}
 	if result.UpdatedTrace.SnapshotInterval != originalTrace.SnapshotInterval {
@@ -255,7 +255,7 @@ func TestQuickRefresh_NoChanges(t *testing.T) {
 	refresher.SetDetector(detector)
 	
 	ctx := context.Background()
-	trace := createTestTrace(10)
+	trace := createRefreshTestTrace(10)
 	
 	// No changes
 	changes := []StateChange{}
@@ -283,7 +283,7 @@ func TestQuickRefresh_WithChanges(t *testing.T) {
 	refresher.SetDetector(detector)
 	
 	ctx := context.Background()
-	trace := createTestTrace(20)
+	trace := createRefreshTestTrace(20)
 	
 	changes := []StateChange{
 		{
@@ -345,7 +345,7 @@ func TestRebuildSnapshots(t *testing.T) {
 	runner := &mockRunner{}
 	refresher := NewIncrementalRefresher(runner)
 	
-	trace := createTestTrace(250) // Will create snapshots at 0, 100, 200
+	trace := createRefreshTestTrace(250) // Will create snapshots at 0, 100, 200
 	
 	refresher.rebuildSnapshots(trace)
 	
@@ -368,7 +368,7 @@ func TestRefresh_TimingMetrics(t *testing.T) {
 	refresher := NewIncrementalRefresher(runner)
 	ctx := context.Background()
 	
-	trace := createTestTrace(100)
+	trace := createRefreshTestTrace(100)
 	snapshot := snapshot.FromMap(map[string]string{"k": "v"})
 	
 	req := &RefreshRequest{

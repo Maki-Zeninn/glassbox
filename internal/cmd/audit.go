@@ -79,6 +79,7 @@ func Generate(txHash string, envelopeXdr, resultMetaXdr string, events, logs []s
 	if err != nil {
 		return nil, errors.WrapValidationError(fmt.Sprintf("invalid private key: %v", err))
 	}
+	defer s.Close()
 	return GenerateWithSigner(txHash, envelopeXdr, resultMetaXdr, events, logs, s, opts)
 }
 

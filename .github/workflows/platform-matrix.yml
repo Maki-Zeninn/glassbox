@@ -1,0 +1,200 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# platform-matrix.yml
+#
+# Dedicated cross-platform test matrix for path handling, terminal behaviour,
+# and file-system contracts that differ across Linux, macOS, and Windows.
+#
+# WHY THIS WORKFLOW EXISTS
+# ────────────────────────
+# ci-test.yml runs all unit tests on three platforms, but failures in
+# platform-sensitive code are easy to miss among thousands of test results.
+# This workflow isolates the platform-matrix tests so failures surface
+# immediately with a clear platform label and actionable output.
+#
+# SCOPE
+# ─────
+# The following subsystems have platform-specific contracts tested here:
+#
+#   internal/pathutil          Path normalisation, separators, drive letters,
+#                              permissions, symlinks, temp-file handling.
+#
+#   internal/terminal          ANSI colour detection, NO_COLOR / FORCE_COLOR
+#                              env-var semantics, non-TTY output correctness,
+#                              symbol table completeness.
+#
+#   internal/trace             Terminal width detection, wrapField line-breaking,
+#                              path-safety validation.
+#
+# SKIP POLICY
+# ───────────
+# Tests that exercise a capability genuinely unavailable on a platform
+# (e.g. symlinks on standard Windows CI) must call t.Skip() with a reason
+# visible in the test output. Tests must NOT silently pass on unsupported
+# platforms — a skip is better than a false positive.
+#
+# JSON OUTPUT
+# ───────────
+# JSON output must be platform-independent. Any ANSI escape sequence in JSON
+# fields is an automatic failure; the tests in internal/terminal enforce this.
+
+name: Platform Matrix
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - "internal/pathutil/**"
+      - "internal/terminal/**"
+      - "internal/trace/terminal*.go"
+      - "internal/trace/path_safety*.go"
+      - ".github/workflows/platform-matrix.yml"
+
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - "internal/pathutil/**"
+      - "internal/terminal/**"
+      - "internal/trace/terminal*.go"
+      - "internal/trace/path_safety*.go"
+      - ".github/workflows/platform-matrix.yml"
+
+  # Weekly run so regressions introduced by dependency updates are caught
+  # even without a code change in the affected packages.
+  schedule:
+    - cron: "0 4 * * 2"   # Tuesday 04:00 UTC
+
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: "Additional Go package patterns to test (space-separated)"
+        required: false
+        default: ""
+
+concurrency:
+  group: platform-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GLASSBOX_TELEMETRY: "false"
+  ARTIFACT_RETENTION_DAYS: "7"
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ─── Platform-matrix test job ─────────────────────────────────────────────
+  platform-tests:
+    name: Platform tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@v1.12.0
+        continue-on-error: true
+
+      # ── Resolve the extra-packages input on workflow_dispatch ──────────────
+      - name: Resolve package scope
+        id: scope
+        shell: bash
+        run: |
+          BASE_PKGS="./internal/pathutil/... ./internal/terminal/... ./internal/trace/..."
+          EXTRA="${{ github.event.inputs.extra_packages }}"
+          if [ -n "${EXTRA}" ]; then
+            echo "packages=${BASE_PKGS} ${EXTRA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "packages=${BASE_PKGS}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Run platform tests ─────────────────────────────────────────────────
+      - name: Run platform tests
+        id: run_tests
+        shell: bash
+        run: |
+          mkdir -p ci-artifacts/platform-${{ matrix.os }}
+
+          if gotestsum --version >/dev/null 2>&1; then
+            gotestsum \
+              --format testname \
+              --junitfile ci-artifacts/platform-${{ matrix.os }}/junit.xml \
+              --jsonfile  ci-artifacts/platform-${{ matrix.os }}/test-output.json \
+              -- -v -count=1 \
+              ${{ steps.scope.outputs.packages }}
+          else
+            go test -v -count=1 \
+              ${{ steps.scope.outputs.packages }} \
+              2>&1 | tee ci-artifacts/platform-${{ matrix.os }}/test-output.log
+          fi
+        # Continue so artifacts are always uploaded.
+        continue-on-error: true
+
+      # ── Annotate results in the PR checks panel ────────────────────────────
+      - name: Annotate test results
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: ci-artifacts/platform-${{ matrix.os }}/junit.xml
+          check_name: "Platform tests (${{ matrix.os }})"
+          fail_on_failure: false   # gate step controls the final outcome
+
+      # ── Upload failure artifacts ───────────────────────────────────────────
+      - name: Upload failure artifacts
+        if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-test-failure-${{ matrix.os }}-${{ github.run_id }}
+          path: ci-artifacts/platform-${{ matrix.os }}/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: warn
+
+      # ── Propagate the test exit code ──────────────────────────────────────
+      - name: Enforce test result
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "::error::Platform tests failed on ${{ matrix.os }}."
+          echo "Download artifact 'platform-test-failure-${{ matrix.os }}-${{ github.run_id }}' for details."
+          echo ""
+          echo "Common failure causes:"
+          echo "  - Path separator mismatch (backslash vs forward slash)"
+          echo "  - File permission mode bits not respected"
+          echo "  - ANSI escape sequences in JSON output"
+          echo "  - TTY detection returns unexpected value"
+          echo ""
+          echo "Tests that skip on unsupported platforms must call t.Skip() with a reason."
+          exit 1
+
+  # ─── Gate: all platforms must pass ────────────────────────────────────────
+  platform-gate:
+    name: Platform gate (all platforms passed)
+    runs-on: ubuntu-latest
+    needs: platform-tests
+    if: always()
+
+    steps:
+      - name: Evaluate gate
+        run: |
+          result="${{ needs.platform-tests.result }}"
+          echo "platform-tests result: ${result}"
+          if [[ "${result}" != "success" && "${result}" != "skipped" ]]; then
+            echo "::error::One or more platform tests failed."
+            echo "See individual platform jobs for details."
+            exit 1
+          fi
+          echo "All platform tests passed."

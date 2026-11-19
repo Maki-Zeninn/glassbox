@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dotandev/glassbox/internal/wasmvalidate"
 )
 
 // PreflightIssue describes a single environment problem found during preflight.
@@ -128,14 +130,44 @@ func RunSourceMapPreflight(projectRoot string) *PreflightReport {
 					Hint: "Compile the contract with debug symbols: cargo build --target wasm32-unknown-unknown --release",
 				})
 			}
+
+			// Structurally validate every discovered .wasm file so corrupt or
+			// hostile artifacts are reported here, with a field-specific
+			// diagnostic, rather than surfacing as an opaque parser error
+			// once deep source mapping begins.
+			for _, wasmFile := range wasmFiles {
+				content, readErr := os.ReadFile(wasmFile)
+				if readErr != nil {
+					report.Issues = append(report.Issues, PreflightIssue{
+						Check:       "wasm_structural",
+						Severity:    "warning",
+						Description: fmt.Sprintf("could not read %q: %v", wasmFile, readErr),
+						Hint:        "Ensure the file is readable and try rebuilding the contract.",
+					})
+					continue
+				}
+				validation := wasmvalidate.Validate(content, wasmvalidate.DefaultLimits())
+				for _, issue := range validation.Issues {
+					severity := "warning"
+					if issue.Class == wasmvalidate.ClassStructural {
+						severity = "error"
+					}
+					report.Issues = append(report.Issues, PreflightIssue{
+						Check:       "wasm_" + string(issue.Class),
+						Severity:    severity,
+						Description: fmt.Sprintf("%s: %s (%s)", wasmFile, issue.Description, issue.Field),
+						Hint:        issue.Hint,
+					})
+				}
+			}
 		}
 	}
 
 	// ── GLASSBOX_SKIP_SOURCE_MAPPING ─────────────────────────────────────────
 	if isTruthy(os.Getenv("GLASSBOX_SKIP_SOURCE_MAPPING")) {
 		report.Issues = append(report.Issues, PreflightIssue{
-			Check:    "skip_source_mapping_env",
-			Severity: "warning",
+			Check:       "skip_source_mapping_env",
+			Severity:    "warning",
 			Description: "GLASSBOX_SKIP_SOURCE_MAPPING is set — source mapping is disabled",
 			Hint:        "Unset GLASSBOX_SKIP_SOURCE_MAPPING to re-enable source line resolution.",
 		})

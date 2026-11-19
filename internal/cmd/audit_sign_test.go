@@ -272,6 +272,19 @@ func TestRunAuditSign_OutputsJSON(t *testing.T) {
 	if log.Provider != "software" {
 		t.Fatalf("expected provider 'software', got %q", log.Provider)
 	}
+	// Verify key-origin metadata is populated.
+	if log.KeyOrigin == nil {
+		t.Fatal("expected key_origin in output")
+	}
+	if log.KeyOrigin.Provider != "software" {
+		t.Errorf("key_origin.provider = %q, want %q", log.KeyOrigin.Provider, "software")
+	}
+	if log.KeyOrigin.Algorithm != "ed25519" {
+		t.Errorf("key_origin.algorithm = %q, want %q", log.KeyOrigin.Algorithm, "ed25519")
+	}
+	if log.KeyOrigin.KeyFingerprint == "" {
+		t.Error("key_origin.key_fingerprint must not be empty")
+	}
 }
 
 func TestRunAuditSign_BothPayloadFlags_ReturnsError(t *testing.T) {

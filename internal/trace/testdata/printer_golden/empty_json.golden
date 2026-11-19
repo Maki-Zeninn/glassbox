@@ -1,0 +1,12 @@
+{
+  "transaction_hash": "5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab",
+  "start_time": "2026-01-01T00:00:00Z",
+  "end_time": "2026-01-01T00:00:05Z",
+  "states": [],
+  "snapshots": [],
+  "annotations": {
+    "generated_at": "0001-01-01T00:00:00Z"
+  },
+  "current_step": 0,
+  "snapshot_interval": 100
+}

@@ -33,6 +33,13 @@ type SnapshotDiff struct {
 	Modified          []EntryChange
 	BaseFingerprint   string
 	TargetFingerprint string
+	// Version information — populated by DiffPersistedSnapshots when both
+	// PersistedSnapshots are available.
+	BaseSchemaVersion   int
+	TargetSchemaVersion int
+	// MigrationNotes records any automatic migrations that ran when the
+	// snapshots were loaded, so diff output can surface version history.
+	MigrationNotes []string
 }
 
 // TotalChanges returns the total count of added, removed, and modified entries.
@@ -86,6 +93,15 @@ func DiffSnapshots(base, target *Snapshot) *SnapshotDiff {
 func FormatDiff(diff *SnapshotDiff) string {
 	var sb strings.Builder
 
+	// Version header — shown when schema version info is available.
+	if diff.BaseSchemaVersion > 0 || diff.TargetSchemaVersion > 0 {
+		fmt.Fprintf(&sb, "Schema versions:    base=v%d  target=v%d\n",
+			diff.BaseSchemaVersion, diff.TargetSchemaVersion)
+	}
+	for _, note := range diff.MigrationNotes {
+		fmt.Fprintf(&sb, "  (migration) %s\n", note)
+	}
+
 	if diff.TotalChanges() == 0 {
 		sb.WriteString("Snapshots are identical.\n")
 		return sb.String()
@@ -113,6 +129,57 @@ func FormatDiff(diff *SnapshotDiff) string {
 	}
 
 	return sb.String()
+}
+
+// DiffPersistedSnapshots compares two PersistedSnapshots, auto-migrating each
+// to the current schema version if needed, and returns a SnapshotDiff that
+// includes version metadata and migration notes.
+//
+// Neither snapshot is written to disk during this call — migration is applied
+// in memory only.
+func DiffPersistedSnapshots(base, target *PersistedSnapshot) (*SnapshotDiff, error) {
+	if base == nil {
+		return nil, fmt.Errorf("base snapshot is nil")
+	}
+	if target == nil {
+		return nil, fmt.Errorf("target snapshot is nil")
+	}
+
+	var migrationNotes []string
+
+	// Migrate base if needed.
+	baseVersion := 0
+	if base.Metadata != nil {
+		baseVersion = base.Metadata.SchemaVersion
+	}
+	baseSteps, err := MigrateSnapshot(base)
+	if err != nil {
+		return nil, fmt.Errorf("base snapshot migration failed: %w", err)
+	}
+	for _, s := range baseSteps {
+		migrationNotes = append(migrationNotes,
+			fmt.Sprintf("base: %s (v%d → v%d)", s.Description, s.FromVersion, s.ToVersion))
+	}
+
+	// Migrate target if needed.
+	targetVersion := 0
+	if target.Metadata != nil {
+		targetVersion = target.Metadata.SchemaVersion
+	}
+	targetSteps, err := MigrateSnapshot(target)
+	if err != nil {
+		return nil, fmt.Errorf("target snapshot migration failed: %w", err)
+	}
+	for _, s := range targetSteps {
+		migrationNotes = append(migrationNotes,
+			fmt.Sprintf("target: %s (v%d → v%d)", s.Description, s.FromVersion, s.ToVersion))
+	}
+
+	diff := DiffSnapshots(base.Snapshot, target.Snapshot)
+	diff.BaseSchemaVersion = baseVersion
+	diff.TargetSchemaVersion = targetVersion
+	diff.MigrationNotes = migrationNotes
+	return diff, nil
 }
 
 func truncateKey(s string) string {

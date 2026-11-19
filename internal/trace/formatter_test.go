@@ -178,7 +178,7 @@ func TestFormatTraceNode_NestedChildren(t *testing.T) {
 func TestFormatTraceNode_SourceRefPreserved(t *testing.T) {
 	t.Parallel()
 	n := NewTraceNode("n1", "contract_call")
-	n.SourceRef = &SourceRef{File: "pool.rs", Line: 99, Column: 7}
+	n.SourceRef = &SourceRef{File: "pool.rs", Line: 99, Column: 7, Confidence: nil}
 	out := FormatTraceNode(n, defaultOpts())
 	assert.Contains(t, out, "pool.rs:99:7", "source ref with column should appear in output")
 }

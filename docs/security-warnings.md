@@ -94,3 +94,13 @@ findings := detector.AnalyzeContractSource(security.SourceContext{
     Metadata: metadata,
 })
 ```
+
+---
+
+## Architecture Decision Records
+
+The following ADRs govern the design decisions behind the security controls described on this page:
+
+- [ADR-004: Data Classification and Cross-Boundary Data Flows](adr/004-data-classification.md) — provides the full data classification taxonomy that underlies the redaction rules, telemetry sanitisation, and URL credential stripping documented here. The audit log redaction rules are derived from the `SECRET` data class.
+- [ADR-003: Trust Boundaries and Component Trust Levels](adr/003-trust-boundaries.md) — documents the telemetry and crash report boundaries (Tier 4, external services) and the controls — command name sanitisation, hash fingerprinting — applied before data crosses those boundaries.
+- [ADR-005: Canonicalization Ownership](adr/005-canonicalization-ownership.md) — documents the schema validation and `NaN`/`Infinity` rejection that prevents malformed values from reaching the signing path.

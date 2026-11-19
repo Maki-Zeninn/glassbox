@@ -7,7 +7,7 @@
 //     checked-in golden files under testdata/completion/.  CI fails when the
 //     snapshot is stale.  Regenerate with:
 //
-//	go test ./internal/cmd -run TestCompletionSnapshot -update
+//     go test ./internal/cmd -run TestCompletionSnapshot -update
 //
 //  2. TestPublicFlagsHaveCompletion — walks every non-hidden command in the
 //     tree and fails when an enum-valued flag has no completion function
@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // -update regenerates the golden snapshot files instead of comparing.
@@ -172,17 +173,17 @@ func TestCompletionContainsAllPublicCommands(t *testing.T) {
 //
 // Add a flag here when it accepts only a finite set of values.
 var knownEnumFlags = map[string][]string{
-	"network":          NetworkValues,
-	"format":           nil, // validated per-command below
-	"export-format":    TraceExportFormatValues,
-	"theme":            ThemeValues,
-	"trace-verbosity":  TraceVerbosityValues,
-	"view":             ViewModeValues,
-	"profile-format":   ProfileFormatValues,
-	"log-level":        LogLevelValues,
-	"runtime":          BindingsRuntimeValues,
-	"spec-format":      SpecFormatValues,
-	"type":             XDRTypeValues,
+	"network":           NetworkValues,
+	"format":            nil, // validated per-command below
+	"export-format":     TraceExportFormatValues,
+	"theme":             ThemeValues,
+	"trace-verbosity":   TraceVerbosityValues,
+	"view":              ViewModeValues,
+	"profile-format":    ProfileFormatValues,
+	"log-level":         LogLevelValues,
+	"runtime":           BindingsRuntimeValues,
+	"spec-format":       SpecFormatValues,
+	"type":              XDRTypeValues,
 	"failover-strategy": FailoverStrategyValues,
 }
 
@@ -202,7 +203,7 @@ func commandsWithEnumFlag(root *cobra.Command) []struct {
 		if cmd.Hidden {
 			return
 		}
-		cmd.Flags().VisitAll(func(f *cobra.Flag) {
+		cmd.Flags().VisitAll(func(f *pflag.Flag) {
 			if _, isEnum := knownEnumFlags[f.Name]; isEnum {
 				result = append(result, struct {
 					cmd  *cobra.Command
@@ -258,16 +259,16 @@ func TestPublicFlagsHaveCompletion(t *testing.T) {
 // This catches drift when someone updates a Values slice but forgets the map.
 func TestEnumFlagValuesMatchHelpers(t *testing.T) {
 	canonical := map[string][]string{
-		"network":          NetworkValues,
-		"theme":            ThemeValues,
-		"export-format":    TraceExportFormatValues,
-		"trace-verbosity":  TraceVerbosityValues,
-		"view":             ViewModeValues,
-		"profile-format":   ProfileFormatValues,
-		"log-level":        LogLevelValues,
-		"runtime":          BindingsRuntimeValues,
-		"spec-format":      SpecFormatValues,
-		"type":             XDRTypeValues,
+		"network":           NetworkValues,
+		"theme":             ThemeValues,
+		"export-format":     TraceExportFormatValues,
+		"trace-verbosity":   TraceVerbosityValues,
+		"view":              ViewModeValues,
+		"profile-format":    ProfileFormatValues,
+		"log-level":         LogLevelValues,
+		"runtime":           BindingsRuntimeValues,
+		"spec-format":       SpecFormatValues,
+		"type":              XDRTypeValues,
 		"failover-strategy": FailoverStrategyValues,
 	}
 

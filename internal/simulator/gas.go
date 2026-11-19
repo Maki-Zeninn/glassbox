@@ -6,6 +6,7 @@ package simulator
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/dotandev/glassbox/internal/errors"
 )
@@ -192,7 +193,12 @@ func budgetToGasEstimation(b *BudgetUsage) (*GasEstimation, error) {
 	if err != nil {
 		return nil, err
 	}
-	upper := lower * UpperBoundMultiplierPercent / 100
+	var upper int64
+	if lower > math.MaxInt64/UpperBoundMultiplierPercent {
+		upper = math.MaxInt64
+	} else {
+		upper = lower * UpperBoundMultiplierPercent / 100
+	}
 
 	return &GasEstimation{
 		CPUCost:                b.CPUInstructions,

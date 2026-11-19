@@ -51,23 +51,32 @@ Configuration sources:
 
 ## Configuration Precedence
 
-Configuration is resolved in the following order (highest wins):
+For a setting supplied by more than one source, the tested order is (highest
+wins):
 
-1. CLI flags
-2. Environment variables (`GLASSBOX_*`)
-3. Repository-local config (`.glassbox.toml` or `.Glassbox.toml`)
-4. Home directory config (`~/.glassbox/config.toml` or `~/.Glassbox.toml`)
-5. Built-in defaults
+1. An explicit command-line value, when that command accepts a flag for the setting
+2. Environment variables
+3. Config files
+4. Built-in defaults
+
+The tests also verify that project-local values override home-directory values,
+and that the XDG-style file overrides the legacy filename in the same
+directory. Files are merged by key; finding a project file does not discard
+settings from a lower-priority file. Environment variables override file
+values. The CLI flag-over-environment case is tested for RPC tokens.
 
 ## Config File Locations
 
-The following locations are searched (first match wins):
+The loader reads these user and project files, merging later/higher-priority
+values over earlier ones:
 
-- `.glassbox.toml` (current directory)
-- `.Glassbox.toml` (current directory)
-- `~/.glassbox/config.toml` (home directory, XDG-style)
 - `~/.Glassbox.toml` (home directory, legacy)
-- `/etc/Glassbox/config.toml` (system-wide)
+- `~/.glassbox/config.toml` (home directory, XDG-style)
+- `.Glassbox.toml` (current directory, legacy)
+- `.glassbox.toml` (current directory, XDG-style)
+
+The loader also reads `/etc/Glassbox/config.toml`; current precedence tests do
+not establish that file's position relative to the user and project files.
 
 ## Source Annotations
 
@@ -79,4 +88,14 @@ In JSON mode, each config value includes a `source` field:
 | `file` | Set in a config file |
 | `default` | Built-in default value |
 
-Sensitive values (tokens, passwords) are redacted as `[redacted]` in the output.
+For a safe per-field inspection, use the explain report. Its tested redaction
+replaces sensitive effective values with `[redacted]`; the selection below also
+keeps the output focused on the value, source, and redaction status:
+
+```bash
+glassbox config show --explain --json \
+  | jq '{active_file, fields: [.fields[] | {field, source, effective_value, redacted, default_applied}]}'
+```
+
+The environment bindings and their supported variable names are documented in
+[Bindings and environment variables](bindings-environments.md).

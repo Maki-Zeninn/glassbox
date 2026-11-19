@@ -5,7 +5,8 @@
 //!
 //! This module provides caching of parsed source map mappings to speed up
 //! repetitive debugging sessions. Cached mappings are stored in
-//! ~/.erst/cache/sourcemaps indexed by WASM SHA256 hash.
+//! ~/.erst/cache/sourcemaps indexed by a composite key derived from the
+//! WASM SHA256 hash and source-mapping metadata.
 
 #![allow(dead_code)]
 
@@ -81,7 +82,7 @@ mod flock {
 /// Default cache directory name
 pub const CACHE_DIR_NAME: &str = "sourcemaps";
 
-/// Cache entry containing parsed source mappings
+/// Cache entry containing parsed source mappings and the metadata used to key it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMapCacheEntry {
     /// The WASM hash this entry corresponds to
@@ -90,8 +91,67 @@ pub struct SourceMapCacheEntry {
     pub has_symbols: bool,
     /// Cached mappings from wasm offset to source location
     pub mappings: HashMap<u64, SourceLocation>,
+    /// Optional fingerprint of the WASM debug sections
+    #[serde(default)]
+    pub debug_section_fingerprint: Option<String>,
+    /// Optional compiler metadata extracted from the WASM
+    #[serde(default)]
+    pub compiler_metadata: Option<String>,
+    /// Optional source root inferred from the WASM or build environment
+    #[serde(default)]
+    pub source_root: Option<String>,
+    /// Optional manifest metadata extracted from contract custom sections
+    #[serde(default)]
+    pub manifest_metadata: Option<String>,
     /// Timestamp when the entry was created
     pub created_at: u64,
+}
+
+impl SourceMapCacheEntry {
+    pub fn cache_key(&self) -> String {
+        Self::compute_cache_key(
+            &self.wasm_hash,
+            self.debug_section_fingerprint.as_deref(),
+            self.compiler_metadata.as_deref(),
+            self.source_root.as_deref(),
+            self.manifest_metadata.as_deref(),
+        )
+    }
+
+    pub fn compute_cache_key(
+        wasm_hash: &str,
+        debug_section_fingerprint: Option<&str>,
+        compiler_metadata: Option<&str>,
+        source_root: Option<&str>,
+        manifest_metadata: Option<&str>,
+    ) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"source-map-cache-key");
+        hasher.update(&[0]);
+        hasher.update(wasm_hash.as_bytes());
+        hasher.update(&[0]);
+
+        if let Some(debug_section_fingerprint) = debug_section_fingerprint {
+            hasher.update(debug_section_fingerprint.as_bytes());
+        }
+        hasher.update(&[0]);
+
+        if let Some(compiler_metadata) = compiler_metadata {
+            hasher.update(compiler_metadata.as_bytes());
+        }
+        hasher.update(&[0]);
+
+        if let Some(source_root) = source_root {
+            hasher.update(source_root.as_bytes());
+        }
+        hasher.update(&[0]);
+
+        if let Some(manifest_metadata) = manifest_metadata {
+            hasher.update(manifest_metadata.as_bytes());
+        }
+
+        hex::encode(hasher.finalize())
+    }
 }
 
 /// Source map cache manager
@@ -154,9 +214,9 @@ impl SourceMapCache {
         hex::encode(result)
     }
 
-    /// Gets the cache file path for a given WASM hash
-    fn get_cache_path(&self, wasm_hash: &str) -> PathBuf {
-        self.cache_dir.join(format!("{}.bin", wasm_hash))
+    /// Gets the cache file path for a given cache key.
+    fn get_cache_path(&self, cache_key: &str) -> PathBuf {
+        self.cache_dir.join(format!("{}.bin", cache_key))
     }
 
     /// Gets the advisory lock file path for a given cache path.
@@ -185,13 +245,13 @@ impl SourceMapCache {
     /// Gets a cached source map entry if it exists and is valid.
     /// When `no_cache` is true, skips the cache and returns None immediately,
     /// forcing the caller to re-parse WASM symbols from scratch.
-    pub fn get(&self, wasm_hash: &str, no_cache: bool) -> Option<SourceMapCacheEntry> {
+    pub fn get(&self, cache_key: &str, no_cache: bool) -> Option<SourceMapCacheEntry> {
         if no_cache {
             println!("Cache bypassed via --no-cache flag. Re-parsing WASM symbols.");
             return None;
         }
 
-        let cache_path = self.get_cache_path(wasm_hash);
+        let cache_path = self.get_cache_path(cache_key);
 
         if !cache_path.exists() {
             return None;
@@ -231,8 +291,8 @@ impl SourceMapCache {
         let result = match bincode::deserialize(&bytes) {
             Ok(entry) => {
                 println!(
-                    "Cache hit! Loading source map from cache for WASM: {}",
-                    &wasm_hash[..8]
+                    "Cache hit! Loading source map from cache for cache_key: {}",
+                    &cache_key[..8]
                 );
                 Some(entry)
             }
@@ -260,7 +320,7 @@ impl SourceMapCache {
             Err(e) => return Err(format!("Failed to create cache directory: {}", e)),
         }
 
-        let cache_path = self.get_cache_path(&entry.wasm_hash);
+        let cache_path = self.get_cache_path(&entry.cache_key());
 
         // Acquire an exclusive OS-level lock before writing.
         let lock_file = Self::open_lock_file(&cache_path)
@@ -280,10 +340,11 @@ impl SourceMapCache {
         // readers observing a partially-written file and to prevent concurrent
         // writers from clobbering each other's tmp file (critical on Windows
         // where flock is a no-op).
+        let cache_key = entry.cache_key();
         let tmp_id = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
             .cache_dir
-            .join(format!("{}.{}.tmp", entry.wasm_hash, tmp_id));
+            .join(format!("{}.{}.tmp", cache_key, tmp_id));
         let write_result = (|| {
             let mut file = File::create(&tmp_path)
                 .map_err(|e| format!("Failed to create temp cache file {:?}: {}", tmp_path, e))?;
@@ -305,7 +366,7 @@ impl SourceMapCache {
 
         write_result?;
 
-        println!("Cached source map for WASM: {}", &entry.wasm_hash[..8]);
+        println!("Cached source map for WASM: {} (cache_key={})", &entry.wasm_hash[..8], &cache_key[..8]);
 
         if let Some(max_size) = self.max_cache_size {
             self.evict_if_needed(max_size)?;
@@ -337,7 +398,7 @@ impl SourceMapCache {
                 break;
             }
 
-            let cache_path = self.cache_dir.join(format!("{}.bin", entry.wasm_hash));
+            let cache_path = self.cache_dir.join(format!("{}.bin", entry.cache_key));
             let lock_path = SourceMapCache::get_lock_path(&cache_path);
 
             if cache_path.exists() {
@@ -427,8 +488,13 @@ impl SourceMapCache {
                         if let Ok(cache_entry) = bincode::deserialize::<SourceMapCacheEntry>(&bytes)
                         {
                             let file_size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            let cache_key = path
+                                .file_stem()
+                                .map(|stem| stem.to_string_lossy().to_string())
+                                .unwrap_or_default();
 
                             entries.push(CachedEntryInfo {
+                                cache_key,
                                 wasm_hash: cache_entry.wasm_hash,
                                 has_symbols: cache_entry.has_symbols,
                                 mappings_count: cache_entry.mappings.len() as u64,
@@ -459,13 +525,13 @@ impl Default for SourceMapCache {
 /// Metadata about a cached entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedEntryInfo {
+    pub cache_key: String,
     pub wasm_hash: String,
     pub has_symbols: bool,
     pub mappings_count: u64,
     pub created_at: u64,
     pub file_size: u64,
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,27 +585,33 @@ mod tests {
             wasm_hash: wasm_hash.clone(),
             has_symbols: true,
             mappings,
+            debug_section_fingerprint: Some("debugfp".to_string()),
+            compiler_metadata: Some("rustc 1.0".to_string()),
+            source_root: Some("/src".to_string()),
+            manifest_metadata: Some("meta".to_string()),
             created_at: 1_234_567_890,
         };
 
         // Store the entry
+        let cache_key = entry.cache_key();
         cache.store(entry.clone()).unwrap();
 
         // Retrieve the entry — no_cache=false so cache is used normally
-        let retrieved = cache.get(&wasm_hash, false).unwrap();
+        let retrieved = cache.get(&cache_key, false).unwrap();
         assert_eq!(retrieved.wasm_hash, wasm_hash);
         assert!(retrieved.has_symbols);
         assert_eq!(retrieved.mappings.len(), 1);
+        assert_eq!(retrieved.debug_section_fingerprint, Some("debugfp".to_string()));
+        assert_eq!(retrieved.compiler_metadata, Some("rustc 1.0".to_string()));
+        assert_eq!(retrieved.source_root, Some("/src".to_string()));
+        assert_eq!(retrieved.manifest_metadata, Some("meta".to_string()));
     }
 
     #[test]
     fn test_get_missing() {
         let (cache, _temp) = create_test_cache();
 
-        let result = cache.get(
-            "nonexistent_hash_1_234_567_8901_234_567_8901_234_567_89012",
-            false,
-        );
+        let result = cache.get("nonexistent_cache_key", false);
         assert!(result.is_none());
     }
 
@@ -554,12 +626,14 @@ mod tests {
             wasm_hash: wasm_hash.clone(),
             has_symbols: true,
             mappings: HashMap::new(),
-            created_at: 1_234_567_890,
+            ..Default::default()
         };
+
+        let cache_key = entry.cache_key();
 
         // Store an entry so it exists on disk
         cache.store(entry).unwrap();
-        assert!(cache.get(&wasm_hash, false).is_some());
+        assert!(cache.get(&cache_key, false).is_some());
 
         // With no_cache=true, it should return None even though cache exists
         let result = cache.get(&wasm_hash, true);
@@ -581,7 +655,8 @@ mod tests {
         };
 
         cache.store(entry).unwrap();
-        assert!(cache.get(&wasm_hash, false).is_some());
+        let cache_key = entry.cache_key();
+        assert!(cache.get(&cache_key, false).is_some());
 
         let count = cache.clear().unwrap();
         assert_eq!(count, 1);
@@ -614,7 +689,7 @@ mod tests {
             wasm_hash,
             has_symbols: true,
             mappings,
-            created_at: 1_234_567_890,
+            ..Default::default()
         };
 
         cache.store(entry).unwrap();
@@ -777,8 +852,10 @@ mod tests {
         let entry = SourceMapCacheEntry {
             wasm_hash,
             has_symbols: true,
-            mappings: HashMap::new(),
-            created_at: 1_234_567_890,
+            mappings: HashMap::new(),            debug_section_fingerprint: None,
+            compiler_metadata: None,
+            source_root: None,
+            manifest_metadata: None,            created_at: 1_234_567_890,
         };
 
         cache.store(entry).unwrap();

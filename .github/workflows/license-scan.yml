@@ -1,0 +1,300 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# license-scan.yml
+#
+# Scans all three dependency ecosystems (Go, Rust, Node) against the policy
+# defined in license-policy.json and .cargo/deny.toml.
+#
+# Trigger policy:
+#   • Weekly on Sunday 03:00 UTC to catch newly published vulnerability advisories.
+#   • On every pull request that touches dependency files so policy drift is
+#     caught before merge.
+#   • Manually via workflow_dispatch for ad-hoc checks.
+#
+# Failure policy:
+#   • Disallowed or ambiguous licenses and HIGH/CRITICAL vulnerabilities fail
+#     the job and block merge (branch protection rule required).
+#   • MEDIUM/LOW vulnerabilities produce warnings in the job summary.
+#   • UNKNOWN licenses (not in the allow or deny list) produce warnings.
+#   • Reports are always uploaded as artifacts, even on pass, so maintainers
+#     can audit the full dependency list without re-running the workflow.
+#
+# False positives:
+#   Document them in license-policy.json under false_positive_policy.entries.
+#   Do NOT suppress the scan or expand the allowed-licenses list for a single
+#   false positive.
+
+name: License Scan
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"  # Weekly, Sunday 03:00 UTC
+
+  pull_request:
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "simulator/Cargo.toml"
+      - "simulator/Cargo.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "license-policy.json"
+      - ".cargo/deny.toml"
+      - ".github/workflows/license-scan.yml"
+
+  workflow_dispatch:
+    inputs:
+      ecosystem:
+        description: "Ecosystem to scan: go, rust, node, or all (default: all)"
+        required: false
+        default: "all"
+
+concurrency:
+  group: license-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REPORT_DIR: license-reports
+
+jobs:
+  # ── Go dependency license scan ────────────────────────────────────────────
+  scan-go:
+    name: Go licenses
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.ecosystem == 'all' ||
+      github.event.inputs.ecosystem == 'go'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install go-licenses
+        run: |
+          go install github.com/google/go-licenses@latest
+          echo "go-licenses: $(go-licenses --version 2>&1 || true)"
+
+      - name: Scan Go dependencies
+        id: scan
+        run: |
+          mkdir -p "${REPORT_DIR}"
+          bash scripts/check-licenses.sh --go
+        continue-on-error: true
+
+      - name: Post summary
+        if: always()
+        run: |
+          if [ -f "${REPORT_DIR}/summary.txt" ]; then
+            echo "## Go License Scan" >> "$GITHUB_STEP_SUMMARY"
+            cat "${REPORT_DIR}/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Go license report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-license-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Fail on violations
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "Go license scan found violations."
+          echo "See the uploaded artifact 'go-license-report-${{ github.run_id }}' for details."
+          echo "Review docs/license-policy.md for the remediation process."
+          exit 1
+
+  # ── Rust dependency license + advisory scan (cargo-deny) ─────────────────
+  scan-rust:
+    name: Rust licenses + advisories
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.ecosystem == 'all' ||
+      github.event.inputs.ecosystem == 'rust'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.86.0"
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo deny check — licenses
+        id: deny-licenses
+        run: |
+          mkdir -p "${REPORT_DIR}"
+          cargo deny \
+            --manifest-path simulator/Cargo.toml \
+            --config .cargo/deny.toml \
+            check licenses 2>&1 | tee "${REPORT_DIR}/rust-deny-licenses.txt"
+        continue-on-error: true
+
+      - name: Run cargo deny check — advisories
+        id: deny-advisories
+        run: |
+          cargo deny \
+            --manifest-path simulator/Cargo.toml \
+            --config .cargo/deny.toml \
+            check advisories 2>&1 | tee "${REPORT_DIR}/rust-deny-advisories.txt"
+        continue-on-error: true
+
+      - name: Run cargo deny check — bans + sources
+        id: deny-bans
+        run: |
+          cargo deny \
+            --manifest-path simulator/Cargo.toml \
+            --config .cargo/deny.toml \
+            check bans sources 2>&1 | tee "${REPORT_DIR}/rust-deny-bans.txt"
+        continue-on-error: true
+
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## Rust License + Advisory Scan" >> "$GITHUB_STEP_SUMMARY"
+          for f in licenses advisories bans; do
+            file="${REPORT_DIR}/rust-deny-${f}.txt"
+            if [ -f "${file}" ]; then
+              echo "### cargo deny check ${f}" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              tail -20 "${file}" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload Rust license + advisory report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-license-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/rust-deny-*.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Fail on violations
+        if: >
+          steps.deny-licenses.outcome == 'failure' ||
+          steps.deny-advisories.outcome == 'failure'
+        run: |
+          echo "Rust license or advisory scan found violations."
+          echo "See the uploaded artifact 'rust-license-report-${{ github.run_id }}' for details."
+          echo "Review docs/license-policy.md and .cargo/deny.toml for the remediation process."
+          exit 1
+
+  # ── Node dependency license scan ──────────────────────────────────────────
+  scan-node:
+    name: Node licenses
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.ecosystem == 'all' ||
+      github.event.inputs.ecosystem == 'node'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Install license-checker
+        run: npm install -g license-checker --prefer-offline
+
+      - name: Scan Node dependencies
+        id: scan
+        run: |
+          mkdir -p "${REPORT_DIR}"
+          bash scripts/check-licenses.sh --node
+        continue-on-error: true
+
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## Node License Scan" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "${REPORT_DIR}/summary.txt" ]; then
+            cat "${REPORT_DIR}/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "${REPORT_DIR}/node-violations.txt" ] && [ -s "${REPORT_DIR}/node-violations.txt" ]; then
+            echo "### Violations" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat "${REPORT_DIR}/node-violations.txt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Node license report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-license-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/node-*.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Fail on violations
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "Node license scan found violations."
+          echo "See the uploaded artifact 'node-license-report-${{ github.run_id }}' for details."
+          echo "Review docs/license-policy.md for the remediation process."
+          exit 1
+
+  # ── Policy gate: all three ecosystems must pass ────────────────────────────
+  license-gate:
+    name: License policy gate
+    runs-on: ubuntu-latest
+    needs: [scan-go, scan-rust, scan-node]
+    if: always()
+
+    steps:
+      - name: Check all scans passed
+        run: |
+          results=(
+            "go:${{ needs.scan-go.result }}"
+            "rust:${{ needs.scan-rust.result }}"
+            "node:${{ needs.scan-node.result }}"
+          )
+          failed=0
+          for r in "${results[@]}"; do
+            ecosystem="${r%%:*}"
+            result="${r##*:}"
+            if [ "${result}" = "failure" ]; then
+              echo "[FAIL] ${ecosystem} license scan failed"
+              failed=1
+            elif [ "${result}" = "skipped" ]; then
+              echo "[SKIP] ${ecosystem} scan was skipped (workflow_dispatch filter)"
+            else
+              echo "[PASS] ${ecosystem} license scan passed (result: ${result})"
+            fi
+          done
+          if [ "${failed}" -eq 1 ]; then
+            echo ""
+            echo "One or more license scans failed. Actions required:"
+            echo "  1. Download the scan report artifacts from the Actions UI."
+            echo "  2. For each violation, either replace the dependency or add"
+            echo "     a time-limited exception in license-policy.json."
+            echo "  3. See docs/license-policy.md for the full process."
+            exit 1
+          fi
+          echo ""
+          echo "All license scans passed."

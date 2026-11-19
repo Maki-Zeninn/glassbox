@@ -1,0 +1,326 @@
+// Copyright 2026 Glassbox Users
+// SPDX-License-Identifier: Apache-2.0
+
+package sourcemap
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// ── FallbackMapper.ResolveWithExplain ────────────────────────────────────────
+
+func TestResolveWithExplain_SmallWasm_InputGuardFires(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	result, trace := m.ResolveWithExplain([]byte{0x00, 0x61}, 0x100)
+
+	require.NotNil(t, result)
+	require.NotEmpty(t, trace.Candidates)
+	assert.Equal(t, StageInputGuard, trace.Candidates[0].Stage)
+	assert.True(t, trace.Candidates[0].Accepted)
+	assert.Equal(t, MappingQualityUnknown, result.Quality)
+	assert.Equal(t, "unknown", trace.Quality)
+}
+
+func TestResolveWithExplain_NilWasm_InputGuardFires(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	result, trace := m.ResolveWithExplain(nil, 0x00)
+
+	require.NotNil(t, result)
+	require.NotEmpty(t, trace.Candidates)
+	assert.Equal(t, StageInputGuard, trace.Candidates[0].Stage)
+	assert.Equal(t, MappingQualityUnknown, result.Quality)
+}
+
+func TestResolveWithExplain_NoDebugInfo_DWARF_StageRejected(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	_, trace := m.ResolveWithExplain(minimalWASM(), 0x100)
+
+	require.NotEmpty(t, trace.Candidates)
+
+	stages := make(map[ResolutionStage]bool)
+	for _, c := range trace.Candidates {
+		stages[c.Stage] = c.Accepted
+	}
+	// For a stripped minimal WASM, full_dwarf and partial_dwarf must be rejected.
+	accepted, seen := stages[StageFullDWARF]
+	assert.True(t, seen, "full_dwarf stage must appear in trace")
+	assert.False(t, accepted, "full_dwarf must be rejected for minimal stripped WASM")
+}
+
+func TestResolveWithExplain_CargoManifest_CargoStageAccepted(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Cargo.toml"),
+		[]byte("[package]\nname=\"explain_test_contract\""), 0600))
+
+	m := NewFallbackMapper(dir)
+	result, trace := m.ResolveWithExplain(minimalWASM(), 0x100)
+
+	require.NotNil(t, result)
+
+	var accepted *ExplainEntry
+	for i := range trace.Candidates {
+		if trace.Candidates[i].Accepted {
+			accepted = &trace.Candidates[i]
+			break
+		}
+	}
+	require.NotNil(t, accepted, "at least one candidate must be accepted")
+	assert.Equal(t, StageCargoManifest, accepted.Stage)
+	assert.Equal(t, MappingQualityHeuristic.String(), trace.Quality)
+}
+
+func TestResolveWithExplain_Trace_NeverEmpty(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	cases := [][]byte{nil, {}, minimalWASM()}
+
+	for _, data := range cases {
+		_, trace := m.ResolveWithExplain(data, 0x00)
+		assert.NotEmpty(t, trace.Candidates, "trace must never be empty")
+		assert.NotEmpty(t, trace.Quality, "trace quality must always be set")
+		assert.NotEmpty(t, trace.Summary, "trace summary must always be set")
+	}
+}
+
+func TestResolveWithExplain_QualityAndConfidenceMatchResult(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	result, trace := m.ResolveWithExplain(minimalWASM(), 0x100)
+
+	require.NotNil(t, result)
+	assert.Equal(t, result.Quality.String(), trace.Quality)
+	assert.Equal(t, result.Confidence, trace.Confidence)
+}
+
+func TestResolveWithExplain_NoRawBinaryInTrace(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	_, trace := m.ResolveWithExplain(minimalWASM(), 0x100)
+
+	data, err := json.Marshal(trace)
+	require.NoError(t, err)
+	// WASM magic bytes (\x00asm) must not appear in the JSON output.
+	assert.NotContains(t, string(data), "\x00asm",
+		"trace must not expose raw WASM binary content")
+}
+
+func TestResolveWithExplain_AcceptedEntry_IsTerminal(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	_, trace := m.ResolveWithExplain(minimalWASM(), 0x100)
+
+	require.NotEmpty(t, trace.Candidates)
+
+	// At most one entry should be accepted.
+	acceptedCount := 0
+	for _, c := range trace.Candidates {
+		if c.Accepted {
+			acceptedCount++
+		}
+	}
+	assert.LessOrEqual(t, acceptedCount, 1,
+		"at most one candidate should be marked accepted")
+}
+
+func TestResolveWithExplain_SummaryContainsAddress(t *testing.T) {
+	m := NewFallbackMapper(t.TempDir())
+	const addr = uint64(0xdeadbeef)
+	_, trace := m.ResolveWithExplain(minimalWASM(), addr)
+
+	assert.Equal(t, addr, trace.WasmAddr)
+}
+
+// ── Resolver.ResolveWithExplain ──────────────────────────────────────────────
+
+func TestResolverExplain_CacheHit_CacheStageAccepted(t *testing.T) {
+	cacheDir := t.TempDir()
+	r := NewResolver(WithCache(cacheDir))
+
+	sc := &SourceCode{
+		ContractID: testContractID,
+		Repository: "/some/cached/path",
+		Files:      map[string]string{},
+		FetchedAt:  time.Now(),
+	}
+	if r.cache != nil {
+		require.NoError(t, r.cache.Put(sc))
+	}
+
+	srv := notFoundServer(t)
+	r.registry = NewRegistryClient(WithBaseURL(srv.URL))
+
+	src, trace, err := r.ResolveWithExplain(context.Background(), testContractID)
+	require.NoError(t, err)
+	require.NotNil(t, src)
+
+	var accepted *ExplainEntry
+	for i := range trace.Candidates {
+		if trace.Candidates[i].Accepted {
+			accepted = &trace.Candidates[i]
+			break
+		}
+	}
+	require.NotNil(t, accepted, "a stage must be accepted")
+	assert.Equal(t, StageCache, accepted.Stage)
+	assert.Contains(t, trace.Summary, "cache")
+}
+
+func TestResolverExplain_RegistryHit_RegistryStageAccepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"repository":"https://github.com/org/contract","wasm_hash":"abc123","files":{},"fetched_at":"2026-01-01T00:00:00Z"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	rc := NewRegistryClient(WithBaseURL(srv.URL))
+	r := NewResolver(WithRegistryClient(rc))
+
+	_, trace, err := r.ResolveWithExplain(context.Background(), testContractID)
+	require.NoError(t, err)
+
+	var accepted *ExplainEntry
+	for i := range trace.Candidates {
+		if trace.Candidates[i].Accepted {
+			accepted = &trace.Candidates[i]
+			break
+		}
+	}
+	require.NotNil(t, accepted, "a stage must be accepted")
+	assert.Equal(t, StageRegistry, accepted.Stage)
+}
+
+func TestResolverExplain_AllFail_NonInteractive_ErrorReturned(t *testing.T) {
+	srv := notFoundServer(t)
+	rc := NewRegistryClient(WithBaseURL(srv.URL))
+	r := NewResolver(WithRegistryClient(rc), WithNonInteractive())
+
+	_, trace, err := r.ResolveWithExplain(context.Background(), testContractID)
+	require.Error(t, err)
+	assert.NotEmpty(t, trace.Candidates)
+	assert.Equal(t, "unknown", trace.Quality)
+
+	// All candidates must be rejected when resolution fails.
+	for _, c := range trace.Candidates {
+		assert.False(t, c.Accepted, "no candidate should be accepted on full failure, stage=%s", c.Stage)
+	}
+}
+
+func TestResolverExplain_InvalidContractID_ReturnsError(t *testing.T) {
+	r := NewResolver()
+	_, trace, err := r.ResolveWithExplain(context.Background(), "not-a-contract-id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid contract ID")
+	assert.Empty(t, trace.Candidates, "no stages should run for an invalid contract ID")
+}
+
+func TestResolverExplain_LocalOverride_Accepted(t *testing.T) {
+	srcDir := t.TempDir()
+	srv := notFoundServer(t)
+	rc := NewRegistryClient(WithBaseURL(srv.URL))
+	r := NewResolver(
+		WithRegistryClient(rc),
+		WithContractSource(srcDir),
+		WithNonInteractive(),
+	)
+
+	src, trace, err := r.ResolveWithExplain(context.Background(), testContractID)
+	require.NoError(t, err)
+	require.NotNil(t, src)
+
+	var accepted *ExplainEntry
+	for i := range trace.Candidates {
+		if trace.Candidates[i].Accepted {
+			accepted = &trace.Candidates[i]
+			break
+		}
+	}
+	require.NotNil(t, accepted)
+	assert.Equal(t, StageLocalOverride, accepted.Stage)
+	assert.Contains(t, trace.Summary, "contract-source")
+}
+
+// ── FormatExplainText ────────────────────────────────────────────────────────
+
+func TestFormatExplainText_ContainsStageNames(t *testing.T) {
+	trace := ExplainTrace{
+		WasmAddr: 0x100,
+		Candidates: []ExplainEntry{
+			{Stage: StageFullDWARF, Accepted: false, Reason: "no debug info"},
+			{Stage: StageCargoManifest, Accepted: true, File: "src/lib.rs", Quality: "heuristic", Reason: "Cargo.toml found"},
+		},
+		Summary:    "resolved via Cargo",
+		Quality:    "heuristic",
+		Confidence: 22,
+		ResolvedAt: time.Now(),
+	}
+	text := FormatExplainText(trace)
+
+	assert.Contains(t, text, "full_dwarf")
+	assert.Contains(t, text, "cargo_manifest")
+	assert.Contains(t, text, "REJECTED")
+	assert.Contains(t, text, "ACCEPTED")
+	assert.Contains(t, text, "0x100")
+	assert.Contains(t, text, "resolved via Cargo")
+	assert.Contains(t, text, "22 / 100")
+}
+
+func TestFormatExplainText_IncludesLocationWhenKnown(t *testing.T) {
+	trace := ExplainTrace{
+		Candidates: []ExplainEntry{
+			{Stage: StageFullDWARF, Accepted: true, File: "src/lib.rs", Line: 42, Function: "transfer", Quality: "full", Reason: "exact match"},
+		},
+		Summary:    "resolved",
+		Quality:    "full",
+		Confidence: 100,
+		ResolvedAt: time.Now(),
+	}
+	text := FormatExplainText(trace)
+
+	assert.Contains(t, text, "src/lib.rs:42")
+	assert.Contains(t, text, "transfer")
+}
+
+// ── FormatExplainJSON ────────────────────────────────────────────────────────
+
+func TestFormatExplainJSON_IsValidJSON(t *testing.T) {
+	trace := ExplainTrace{
+		WasmAddr: 0x200,
+		Candidates: []ExplainEntry{
+			{Stage: StageCargoManifest, Accepted: true, File: "src/lib.rs", Quality: "heuristic", Reason: "Cargo.toml found"},
+		},
+		Summary:    "resolved via Cargo",
+		Quality:    "heuristic",
+		Confidence: 22,
+		ResolvedAt: time.Now(),
+	}
+	data, err := FormatExplainJSON(trace)
+	require.NoError(t, err)
+
+	var m map[string]interface{}
+	require.NoError(t, json.Unmarshal(data, &m))
+	assert.Equal(t, "heuristic", m["quality"])
+	assert.Contains(t, m["summary"], "Cargo")
+}
+
+func TestFormatExplainJSON_NoRawBinaryFields(t *testing.T) {
+	trace := ExplainTrace{
+		Candidates: []ExplainEntry{
+			{Stage: StageNone, Accepted: false, Reason: "exhausted"},
+		},
+		Summary: "unresolved",
+		Quality: "unknown",
+	}
+	data, err := FormatExplainJSON(trace)
+	require.NoError(t, err)
+	// Verify the JSON is compact and doesn't contain suspicious binary patterns.
+	assert.False(t, strings.Contains(string(data), ` `),
+		"JSON output must not contain null bytes")
+}

@@ -1,0 +1,38 @@
+# 1121: intelligent RPC cache eviction
+
+category = "cli"
+pr = 0
+summary = "Add a scored cache eviction strategy combining entry type, access frequency, size, network and idle time"
+details = """
+Plain LRU treats every cache entry as equally valuable, which is wrong in both
+directions: a TransactionEnvelope fetched while debugging a failing transaction
+is re-examined constantly, while a speculative ledger entry snapshot is dead
+weight.
+
+`internal/cache/eviction.go` adds `EvictionScorer` and
+`SelectEvictionCandidates`, scoring each entry on five normalised factors:
+
+    score = w_type * typeFactor
+          + w_freq * frequencyFactor
+          + w_size * sizeFactor
+          + w_net  * networkFactor
+          + w_idle * idleFactor
+
+Every factor is in [0, 1] where 1 means evict first. Envelopes and footprints
+score lowest (most valuable), individual ledger entries highest. A never-read
+entry scores 1 on frequency and 1 on idle. Testnet entries are shed before
+mainnet ones. The default weights sum to 1 so scores stay comparable across
+runs and strategies.
+
+Candidate selection is greedy in descending score order and stops as soon as
+the target free space is reached, which is the minimum number of entries for a
+size target under a total order. When the target exceeds the whole cache it
+returns every entry, and a non-positive target returns none.
+
+Scoring weights are configurable via the `eviction` section of the cache config
+(see docs/cache-eviction.md).
+"""
+breaking = false
+migration_note = ""
+affects = ["go-api", "cli-flags"]
+compatibility = "beta"

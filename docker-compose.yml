@@ -1,34 +1,146 @@
 version: "3.8"
 
+# ── Shared security configuration ────────────────────────────────────────────
+# Applied to every service via YAML anchors so settings stay in sync.
+x-security-defaults: &security-defaults
+  # Run as the non-root glassbox user (UID/GID 10001) created in the Dockerfile.
+  user: "10001:10001"
+  # Mount the root filesystem read-only. Only the paths listed under 'tmpfs'
+  # and named 'volumes' remain writable. This prevents an attacker who gains
+  # code execution from persisting changes to the image.
+  read_only: true
+  # Drop ALL Linux capabilities and add back only what is strictly required.
+  # glassbox is a CLI/debug tool — it needs no special kernel capabilities.
+  cap_drop:
+    - ALL
+  # Prevent privilege escalation via setuid binaries or sudo.
+  security_opt:
+    - no-new-privileges:true
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+# Explicit named volumes make writable state visible and portable.
+# Mount these at the paths declared as VOLUME in the Dockerfile.
+volumes:
+  glassbox-cache:
+    driver: local
+  glassbox-sessions:
+    driver: local
+
 services:
-  GLASSBOX:
+  # ── glassbox (default / help mode) ──────────────────────────────────────────
+  # The default command is --help so 'docker compose up' is safe to run without
+  # arguments.  Override with the DEBUG_ARGS environment variable or by passing
+  # a command directly:
+  #   docker compose run glassbox debug <tx-hash>
+  glassbox:
     build:
       context: .
       dockerfile: Dockerfile
-      platforms:
-        - linux/amd64
-        - linux/arm64
       args:
-        VERSION: ${VERSION:-dev}
+        VERSION:    ${VERSION:-dev}
         COMMIT_SHA: ${COMMIT_SHA:-unknown}
         BUILD_DATE: ${BUILD_DATE:-unknown}
-    image: GLASSBOX:local
-    container_name: Glassbox
+    image: glassbox:local
+    container_name: glassbox
+    <<: *security-defaults
+    # Writable paths — match the VOLUME declarations in the Dockerfile.
     volumes:
-      - ./Glassbox.example.toml:/app/Glassbox.toml:ro
+      # Persistent cache survives container restarts.
+      - glassbox-cache:/app/cache
+      # Persistent session state.
+      - glassbox-sessions:/app/sessions
+      # Config file (read-only bind mount — edit on the host, not in the container).
+      - ./glassbox.example.toml:/app/glassbox.toml:ro
+    # /tmp must be writable for in-flight scratch work but should not persist.
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     command: ["--help"]
     restart: "no"
+    # Health check mirrors the Dockerfile HEALTHCHECK so compose reports
+    # healthy/unhealthy correctly in 'docker compose ps'.
+    healthcheck:
+      test: ["/app/glassbox", "--version"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    environment:
+      # Disable ANSI colour codes in non-interactive compose output.
+      NO_COLOR:           ${NO_COLOR:-}
+      GLASSBOX_NO_COLOR:  ${GLASSBOX_NO_COLOR:-}
 
-  # Optional: Include Jaeger for tracing
+  # ── glassbox-debug (interactive debug session) ───────────────────────────────
+  # Use this profile for real debug runs that need network access and a TTY.
+  # Usage:
+  #   docker compose --profile debug run --rm glassbox-debug debug <tx-hash>
+  glassbox-debug:
+    extends:
+      service: glassbox
+    container_name: glassbox-debug
+    profiles:
+      - debug
+    stdin_open: true
+    tty: true
+    restart: "no"
+    environment:
+      NO_COLOR:           ${NO_COLOR:-}
+      GLASSBOX_NO_COLOR:  ${GLASSBOX_NO_COLOR:-}
+      GLASSBOX_RPC_URL:   ${GLASSBOX_RPC_URL:-}
+      GLASSBOX_NETWORK:   ${GLASSBOX_NETWORK:-testnet}
+
+  # ── glassbox-degraded (dependency-unavailable test) ─────────────────────────
+  # Verifies that the container reports unhealthy when the binary cannot run,
+  # satisfying the acceptance criterion: "the image reports unhealthy when
+  # required dependencies are unavailable".
+  #
+  # This service overrides the entrypoint with a command that immediately exits
+  # non-zero so the health check fails within one cycle.  Use in CI to test the
+  # unhealthy path:
+  #   docker compose --profile test up --exit-code-from glassbox-degraded
+  glassbox-degraded:
+    image: glassbox:local
+    container_name: glassbox-degraded
+    <<: *security-defaults
+    volumes:
+      - glassbox-cache:/app/cache
+      - glassbox-sessions:/app/sessions
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    profiles:
+      - test
+    # Override entrypoint to simulate a missing dependency: the health check
+    # calls --version which will also fail, marking the container unhealthy.
+    entrypoint: ["/bin/sh", "-c", "exit 1"]
+    healthcheck:
+      test: ["/app/glassbox", "--version"]
+      interval: 5s
+      timeout: 3s
+      start_period: 2s
+      retries: 1
+    restart: "no"
+
+  # ── jaeger (optional distributed tracing) ────────────────────────────────────
+  # Enable with: docker compose --profile tracing up
   jaeger:
     image: jaegertracing/all-in-one:latest
+    container_name: glassbox-jaeger
+    profiles:
+      - tracing
     ports:
-      - "16686:16686" # Jaeger UI
-      - "14268:14268" # Jaeger collector HTTP
-      - "4317:4317" # OTLP gRPC receiver
-      - "4318:4318" # OTLP HTTP receiver
+      - "16686:16686"   # Jaeger UI
+      - "14268:14268"   # Jaeger collector HTTP
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     command: ["--collector.otlp.enabled=true"]
-    profiles:
-      - tracing
+    # Jaeger runs as its own non-root user (1000); we honour that here.
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

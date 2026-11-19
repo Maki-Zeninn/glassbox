@@ -23,11 +23,22 @@ func makeManifest(name string, caps []Capability, perms []Permission, trust Trus
 	}
 }
 
-func TestDefaultPolicy_AllowsEverything(t *testing.T) {
+func TestDefaultPolicy_AllowsVerifiedOnly(t *testing.T) {
 	pol := DefaultPolicy()
-	m := makeManifest("my-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelUntrusted)
-	if err := pol.CheckManifest(m); err != nil {
-		t.Errorf("default policy should allow everything, got: %v", err)
+	// Default policy should allow verified plugins
+	mVerified := makeManifest("verified-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelVerified)
+	if err := pol.CheckManifest(mVerified); err != nil {
+		t.Errorf("default policy should allow verified plugins, got: %v", err)
+	}
+	// Default policy should block untrusted plugins
+	mUntrusted := makeManifest("untrusted-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelUntrusted)
+	if err := pol.CheckManifest(mUntrusted); err == nil {
+		t.Error("default policy should block untrusted plugins")
+	}
+	// Default policy should block community plugins
+	mCommunity := makeManifest("community-plugin", []Capability{CapabilityDecoder}, []Permission{PermissionNetwork}, TrustLevelCommunity)
+	if err := pol.CheckManifest(mCommunity); err == nil {
+		t.Error("default policy should block community plugins")
 	}
 }
 
@@ -165,5 +176,31 @@ func TestRegistry_PolicyEnforced(t *testing.T) {
 
 	if reg.Policy() != pol {
 		t.Error("Policy() should return the set policy")
+	}
+}
+
+func TestPolicy_ErrorHasHint(t *testing.T) {
+	pol := DefaultPolicy()
+	m := makeManifest("untrusted-plugin", []Capability{CapabilityDecoder}, nil, TrustLevelUntrusted)
+	err := pol.CheckManifest(m)
+	if err == nil {
+		t.Fatal("expected error for untrusted plugin with default policy")
+	}
+	
+	hint := errors.Hint(err)
+	if hint == "" {
+		t.Error("expected error to have a Hint for remediation")
+	}
+	if hint != "To allow community and untrusted plugins, pass --allow-untrusted-plugins on the CLI or set plugin.allow_untrusted = true in the config TOML." {
+		t.Errorf("unexpected hint: %q", hint)
+	}
+	
+	// Verify it's an ErstError with the right code
+	var e *errors.ErstError
+	if !errors.As(err, &e) {
+		t.Error("expected error to be an ErstError")
+	}
+	if e.Code != errors.ErstValidationFailed {
+		t.Errorf("expected error code %s, got %s", errors.ErstValidationFailed, e.Code)
 	}
 }

@@ -1,0 +1,37 @@
+# Example fragment — delete this file before releasing.
+# Copy it as a template for real fragments.
+#
+# Filename convention: <issue-or-pr-id>-<slug>.toml
+# Example:             597-api-compat-checks.toml
+
+# category: one of cli, schema, security, breaking, fix, performance
+category = "cli"
+
+# pr: GitHub PR number (integer, unique per release — enforced by validate-fragments.sh)
+pr = 0
+
+# summary: one sentence, user-facing, present-tense, no trailing period
+# Written for the generated CHANGELOG, not for internal notes.
+summary = "Example: added --example-flag to glassbox debug for demonstration"
+
+# details: optional multi-line prose for the release notes.
+# Leave empty ("") to use summary only.
+details = ""
+
+# breaking: true only when users must change their invocation or scripts.
+# Must be accompanied by a migration_note when true.
+breaking = false
+
+# migration_note: required when breaking = true.
+# Describe exactly what users must do, and link to MIGRATION_GUIDE.md if applicable.
+migration_note = ""
+
+# affects: list of affected surfaces for compatibility matrix cross-reference.
+# Valid values: cli-flags, json-output, session-format, go-api, schema,
+#               exit-codes, protocol, extension
+affects = ["cli-flags"]
+
+# compatibility: stability level of the affected surface after this change.
+# Valid values: stable, beta, experimental, deprecated, removed
+# Optional — omit when no stability-level change is intended.
+# compatibility = "stable"

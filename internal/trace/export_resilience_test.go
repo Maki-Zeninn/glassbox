@@ -705,3 +705,100 @@ func TestExportWithResilience_MetadataStepCountMatchesTrace(t *testing.T) {
 		t.Errorf("metadata.StepCount = %d, want 3", meta.StepCount)
 	}
 }
+
+// ── VerifyExport — metadata Version validation ────────────────────────────────
+
+func TestVerifyExport_MetadataVersion_CurrentVersionPasses(t *testing.T) {
+	trace := NewExecutionTrace("meta-ver-ok", 10)
+	trace.AddState(ExecutionState{Operation: "op"})
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "trace.json")
+
+	if err := ExportWithResilience(trace, "json", outputPath, ExportOptions{}, DefaultRecoveryOptions()); err != nil {
+		t.Fatalf("ExportWithResilience failed: %v", err)
+	}
+
+	// The metadata written by ExportWithResilience uses CurrentJSONSchemaVersion,
+	// so VerifyExport must accept it without error.
+	if err := VerifyExport(outputPath); err != nil {
+		t.Errorf("VerifyExport should pass for current schema version, got: %v", err)
+	}
+}
+
+func TestVerifyExport_MetadataVersion_UnsupportedVersionRejected(t *testing.T) {
+	trace := NewExecutionTrace("meta-ver-bad", 10)
+	trace.AddState(ExecutionState{Operation: "op"})
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "trace.json")
+
+	// Export normally to get a valid trace file.
+	if err := ExportWithResilience(trace, "json", outputPath, ExportOptions{}, DefaultRecoveryOptions()); err != nil {
+		t.Fatalf("ExportWithResilience failed: %v", err)
+	}
+
+	// Overwrite the metadata file with an unsupported schema version to
+	// simulate a file produced by a future binary.
+	meta := ExportMetadata{
+		Version:    "99.0", // deliberately unsupported
+		Format:     "json",
+		StepCount:  1,
+		Checksum:   "", // disable checksum check so only version triggers
+		ExportedAt: time.Now(),
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(outputPath+".meta.json", metaData, 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	err := VerifyExport(outputPath)
+	if err == nil {
+		t.Fatal("VerifyExport should reject metadata with unsupported schema_version")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error should mention schema_version, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "99.0") {
+		t.Errorf("error should echo the bad version, got: %v", err)
+	}
+	// Must be actionable.
+	if !strings.Contains(err.Error(), "Fix:") {
+		t.Errorf("error should include a Fix hint, got: %v", err)
+	}
+}
+
+func TestVerifyExport_MetadataVersion_EmptyVersionAllowed(t *testing.T) {
+	// A metadata file with an empty Version field represents a pre-versioning
+	// export; VerifyExport must not reject it.
+	trace := NewExecutionTrace("meta-ver-empty", 10)
+	trace.AddState(ExecutionState{Operation: "op"})
+
+	tmpDir := t.TempDir()
+	outputPath := filepath.Join(tmpDir, "trace.json")
+
+	if err := ExportWithResilience(trace, "json", outputPath, ExportOptions{}, DefaultRecoveryOptions()); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	// Read back the real checksum so we can build a valid-but-unversioned meta.
+	rawTrace, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+
+	meta := ExportMetadata{
+		Version:   "", // pre-versioning — must be tolerated
+		Format:    "json",
+		StepCount: 1,
+		Checksum:  computeChecksum(rawTrace),
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(outputPath+".meta.json", metaData, 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	if err := VerifyExport(outputPath); err != nil {
+		t.Errorf("VerifyExport should allow empty Version (pre-versioning export), got: %v", err)
+	}
+}

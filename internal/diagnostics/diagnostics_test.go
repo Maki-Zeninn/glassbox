@@ -291,3 +291,30 @@ func TestCollector_ConcurrentStarts_NoRace(t *testing.T) {
 		t.Errorf("expected %d records after concurrent starts, got %d", goroutines, len(recs))
 	}
 }
+
+func TestCollector_CorrelationID(t *testing.T) {
+	c := NewCollector()
+	c.SetCorrelationID("corr-999")
+	if c.CorrelationID() != "corr-999" {
+		t.Fatalf("expected CorrelationID 'corr-999', got %q", c.CorrelationID())
+	}
+
+	block := c.BuildTimingsBlock()
+	if block.CorrelationID != "corr-999" {
+		t.Errorf("expected TimingsBlock.CorrelationID 'corr-999', got %q", block.CorrelationID)
+	}
+
+	var buf bytes.Buffer
+	c.PrintHuman(&buf)
+	if !strings.Contains(buf.String(), "Correlation ID: corr-999") {
+		t.Errorf("PrintHuman output should contain Correlation ID, got:\n%s", buf.String())
+	}
+
+	jsonData, err := c.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON error: %v", err)
+	}
+	if !strings.Contains(string(jsonData), `"correlation_id":"corr-999"`) && !strings.Contains(string(jsonData), `"correlation_id": "corr-999"`) {
+		t.Errorf("JSON output should contain correlation_id, got:\n%s", string(jsonData))
+	}
+}

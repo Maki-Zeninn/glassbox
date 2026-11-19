@@ -6,6 +6,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -702,5 +703,99 @@ max_trace_depth = 25`
 	}
 	if cfg.MaxTraceDepth != 25 {
 		t.Errorf("expected MaxTraceDepth=25 from TOML, got %d", cfg.MaxTraceDepth)
+	}
+}
+
+// ---- Telemetry sample rate (explicit zero) ----------------------------------
+
+func TestApplyDefaults_KeepsExplicitZeroTelemetrySampleRate(t *testing.T) {
+	cfg := &Config{TelemetrySampleRate: 0, TelemetrySampleRateSet: true}
+	configDefaultsAssigner{}.Apply(cfg)
+	if cfg.TelemetrySampleRate != 0 {
+		t.Errorf("explicit TelemetrySampleRate 0 was replaced with %v", cfg.TelemetrySampleRate)
+	}
+}
+
+func TestApplyDefaults_FillsUnsetTelemetrySampleRate(t *testing.T) {
+	cfg := &Config{}
+	configDefaultsAssigner{}.Apply(cfg)
+	if cfg.TelemetrySampleRate != defaultConfig.TelemetrySampleRate {
+		t.Errorf("unset TelemetrySampleRate: expected default %v, got %v",
+			defaultConfig.TelemetrySampleRate, cfg.TelemetrySampleRate)
+	}
+}
+
+func TestEnvParser_ZeroTelemetrySampleRateSurvivesDefaults(t *testing.T) {
+	t.Setenv("GLASSBOX_TELEMETRY_SAMPLE_RATE", "0")
+	cfg := &Config{}
+	if err := (envParser{}).Parse(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.TelemetrySampleRateSet {
+		t.Error("expected TelemetrySampleRateSet=true after parsing GLASSBOX_TELEMETRY_SAMPLE_RATE")
+	}
+	configDefaultsAssigner{}.Apply(cfg)
+	if cfg.TelemetrySampleRate != 0 {
+		t.Errorf("expected TelemetrySampleRate 0 from env, got %v", cfg.TelemetrySampleRate)
+	}
+}
+
+func TestParseTOML_ZeroTelemetrySampleRateSurvivesDefaults(t *testing.T) {
+	cfg := &Config{}
+	if err := cfg.parseTOML("telemetry_sample_rate = 0"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.TelemetrySampleRateSet {
+		t.Error("expected TelemetrySampleRateSet=true after parsing telemetry_sample_rate")
+	}
+	configDefaultsAssigner{}.Apply(cfg)
+	if cfg.TelemetrySampleRate != 0 {
+		t.Errorf("expected TelemetrySampleRate 0 from config file, got %v", cfg.TelemetrySampleRate)
+	}
+}
+
+func TestParseTOML_InvalidTelemetrySampleRate(t *testing.T) {
+	cfg := &Config{}
+	if err := cfg.parseTOML(`telemetry_sample_rate = "often"`); err == nil {
+		t.Fatal("expected error for non-numeric telemetry_sample_rate")
+	}
+}
+
+// ---- DefaultConfig mirrors defaultConfig ------------------------------------
+
+func TestEnvParser_TelemetryEnabledUsesDistinctEnvVar(t *testing.T) {
+	orig := os.Getenv("GLASSBOX_TELEMETRY_ENABLED")
+	origTel := os.Getenv("GLASSBOX_TELEMETRY")
+	defer func() {
+		os.Setenv("GLASSBOX_TELEMETRY_ENABLED", orig)
+		os.Setenv("GLASSBOX_TELEMETRY", origTel)
+	}()
+
+	os.Setenv("GLASSBOX_TELEMETRY_ENABLED", "true")
+	os.Unsetenv("GLASSBOX_TELEMETRY")
+
+	cfg := &Config{}
+	if err := (envParser{}).Parse(cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.TelemetryEnabled {
+		t.Error("expected TelemetryEnabled=true from GLASSBOX_TELEMETRY_ENABLED")
+	}
+	if cfg.Telemetry {
+		t.Error("expected Telemetry=false when only GLASSBOX_TELEMETRY_ENABLED is set")
+	}
+}
+
+func TestDefaultConfig_MirrorsInternalDefaults(t *testing.T) {
+	got := DefaultConfig()
+	if !reflect.DeepEqual(*got, *defaultConfig) {
+		want := reflect.ValueOf(*defaultConfig)
+		have := reflect.ValueOf(*got)
+		for i := 0; i < want.NumField(); i++ {
+			if !reflect.DeepEqual(want.Field(i).Interface(), have.Field(i).Interface()) {
+				t.Errorf("DefaultConfig().%s = %v, want %v",
+					want.Type().Field(i).Name, have.Field(i).Interface(), want.Field(i).Interface())
+			}
+		}
 	}
 }

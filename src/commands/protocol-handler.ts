@@ -4,6 +4,7 @@
 import { Command } from 'commander';
 import { ProtocolHandler } from '../protocol/handler';
 import { ProtocolRegistrar, ProtocolRegistrationError } from '../protocol/register';
+import { ExitCode } from '../exit-codes';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -88,6 +89,15 @@ function releaseLock(): void {
     }
 }
 
+function formatRegistrationSummary(diag: { status: string }): string {
+    switch (diag.status) {
+        case 'ok': return 'OK';
+        case 'degraded': return 'DEGRADED';
+        case 'unsupported': return 'UNSUPPORTED';
+        default: return diag.status.toUpperCase();
+    }
+}
+
 function printProtocolRegistrationFailure(action: string, error: unknown): void {
     if (error instanceof ProtocolRegistrationError) {
         console.error(`[FAIL] ${action} failed: ${error.message}`);
@@ -141,13 +151,13 @@ export function registerProtocolCommands(program: Command): void {
                     `[WARN] Another protocol handler instance is running${lockDetail}. ` +
                     `Use --force to override, or wait for it to finish.`
                 );
-                process.exit(1);
+                process.exit(ExitCode.RESOURCE_ERROR);
             }
 
             const cleanup = (): void => { releaseLock(); };
             process.on('exit', cleanup);
-            process.on('SIGINT', () => { cleanup(); process.exit(130); });
-            process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+            process.on('SIGINT', () => { cleanup(); process.exit(ExitCode.SIGINT); });
+            process.on('SIGTERM', () => { cleanup(); process.exit(ExitCode.SIGTERM); });
 
             try {
                 const handler = new ProtocolHandler({
@@ -162,7 +172,7 @@ export function registerProtocolCommands(program: Command): void {
                 } else {
                     console.error('[FAIL] Protocol handler error: An unknown error occurred');
                 }
-                process.exit(1);
+                process.exit(ExitCode.UNKNOWN_ERROR);
             } finally {
                 releaseLock();
             }
@@ -190,7 +200,7 @@ export function registerProtocolCommands(program: Command): void {
                 console.log('Tip: run "glassbox protocol:status" to confirm the registration is working.');
             } catch (error) {
                 printProtocolRegistrationFailure('Registration', error);
-                process.exit(1);
+                process.exit(ExitCode.CONFIGURATION_ERROR);
             }
         });
 
@@ -205,7 +215,7 @@ export function registerProtocolCommands(program: Command): void {
                 console.log(' Successfully unregistered GLASSBOX Protocol handler');
             } catch (error) {
                 printProtocolRegistrationFailure('Unregistration', error);
-                process.exit(1);
+                process.exit(ExitCode.CONFIGURATION_ERROR);
             }
         });
 
@@ -236,7 +246,7 @@ export function registerProtocolCommands(program: Command): void {
                     for (const fix of diag.remediationSteps) {
                         console.log(`  - ${fix}`);
                     }
-                    process.exit(1);
+                    process.exit(ExitCode.CONFIGURATION_ERROR);
                 }
 
                 if (!diag.registered) {
@@ -252,7 +262,7 @@ export function registerProtocolCommands(program: Command): void {
                     for (const fix of diag.remediationSteps) {
                         console.log(`  - ${fix}`);
                     }
-                    process.exit(1);
+                    process.exit(ExitCode.CONFIGURATION_ERROR);
                 }
 
                 console.log(`Registration:    ${diag.status === 'ok' ? 'REGISTERED' : 'REGISTERED (DEGRADED)'}`);
@@ -273,14 +283,14 @@ export function registerProtocolCommands(program: Command): void {
                 for (const fix of diag.remediationSteps) {
                     console.log(`  - ${fix}`);
                 }
-                process.exit(1);
+                process.exit(ExitCode.CONFIGURATION_ERROR);
             } catch (error) {
                 if (error instanceof Error) {
                     console.error(`[FAIL] Status check failed: ${error.message}`);
                 } else {
                     console.error('[FAIL] Status check failed: An unknown error occurred');
                 }
-                process.exit(1);
+                process.exit(ExitCode.UNKNOWN_ERROR);
             }
         });
 }

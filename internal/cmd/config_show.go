@@ -129,7 +129,7 @@ func printExplainReport(cmd *cobra.Command, report config.ResolveReport) {
 	if report.ActiveFile != "" {
 		fmt.Fprintf(out, "Highest-priority config file: %s\n\n", report.ActiveFile)
 	} else {
-		fmt.Fprintln(out, "No config file found — values come from environment variables and built-in defaults.\n")
+		fmt.Fprintln(out, "No config file found — values come from environment variables and built-in defaults.")
 	}
 
 	// Column header

@@ -1,0 +1,101 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# doc-validation.yml
+#
+# Validates documentation on every PR and push that touches docs/ or command
+# source files. Runs three checks:
+#
+#   1. Deterministic build comparison — docs are reproducible across runs.
+#   2. Broken internal link detection — no dead local links in docs/*.md.
+#   3. Command-flag smoke check — examples reference only known CLI flags.
+#
+# Acceptance criteria:
+#   - Repeated doc builds are identical after documented normalisation.
+#   - Broken local links and unknown command flags fail validation.
+#   - No network or secret-bearing environment is required.
+
+name: Documentation Validation
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "docs/**"
+      - "cmd/glassbox/**"
+      - "internal/cmd/**"
+      - ".api-snapshots/**"
+      - "scripts/validate-docs.sh"
+      - ".github/workflows/doc-validation.yml"
+
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "docs/**"
+      - "cmd/glassbox/**"
+      - "internal/cmd/**"
+      - ".api-snapshots/**"
+      - "scripts/validate-docs.sh"
+      - ".github/workflows/doc-validation.yml"
+
+  # Allow manual runs and scheduled weekly runs to catch drift.
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 4 * * 1"  # Every Monday 04:00 UTC
+
+concurrency:
+  group: doc-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Broken links and determinism (no binary needed) ─────────────────────────
+  doc-lint:
+    name: Doc lint (links + determinism)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Determinism check
+        env:
+          SOURCE_DATE_EPOCH: ${{ github.run_id }}   # stable within the job
+        run: bash scripts/validate-docs.sh --determinism
+
+      - name: Broken internal link check
+        run: bash scripts/validate-docs.sh --links
+
+  # ── Command-flag smoke check (needs built binary) ───────────────────────────
+  doc-flag-check:
+    name: Doc flag smoke check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build glassbox binary
+        run: go build -o bin/glassbox ./cmd/glassbox
+
+      - name: Regenerate CLI snapshots
+        # Regenerate before checking so the snapshot reflects the current binary.
+        # CI never commits these; the check only fails if a doc references an
+        # unknown flag that no snapshot file contains.
+        run: |
+          if [[ -f scripts/api-snapshot.sh ]]; then
+            bash scripts/api-snapshot.sh generate || true
+          fi
+
+      - name: Flag smoke check
+        run: bash scripts/validate-docs.sh --flags

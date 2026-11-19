@@ -13,6 +13,15 @@ on:
 permissions:
   contents: write
 
+# ── Secret required for manifest signing ────────────────────────────────────
+# Repository secret: MANIFEST_SIGNING_KEY
+#   Value: a PKCS#8 PEM Ed25519 private key.
+#   Generate with:
+#     openssl genpkey -algorithm ed25519 -out release-key.pem
+#   Store ONLY the private key value as the secret. Never commit it.
+#   The corresponding public key is embedded in every manifest.json so
+#   verifiers do not need access to any CI secret.
+
 jobs:
   # ── Build Go cross-compiled binaries ────────────────────────────────────────
   build-go:
@@ -57,14 +66,17 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.source_date_epoch }}
         run: |
           go build \
+            -trimpath \
             -ldflags "-s -w \
               -X 'github.com/dotandev/glassbox/internal/version.Version=${{ steps.version.outputs.version }}' \
               -X 'github.com/dotandev/glassbox/internal/version.CommitSHA=${{ steps.version.outputs.commit }}' \
@@ -145,6 +157,7 @@ jobs:
           fi
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
 
       - name: Download all Go binaries
         uses: actions/download-artifact@v4
@@ -161,31 +174,37 @@ jobs:
 
       - name: Write version metadata
         run: |
-          printf 'version=%s\ncommit=%s\nbuild_date=%s\n' \
+          printf 'version=%s\ncommit=%s\nbuild_date=%s\nsource_date_epoch=%s\n' \
             "${{ steps.version.outputs.version }}" \
             "${{ steps.version.outputs.commit }}" \
             "${{ steps.version.outputs.build_date }}" \
+            "${{ steps.version.outputs.source_date_epoch }}" \
             > dist/release/version.txt
 
-      - name: Create archives
+      - name: Create reproducible archives
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.source_date_epoch }}
         run: |
           cd dist/release
           for f in glassbox-linux-* glassbox-darwin-*; do
             [ -f "$f" ] || continue
             chmod +x "$f"
-            tar czf "${f}.tar.gz" "$f"
+            tar --sort=name \
+                --owner=0 --group=0 --numeric-owner \
+                --mtime="@${SOURCE_DATE_EPOCH}" \
+                -czf "${f}.tar.gz" "$f"
             echo "  archived $f"
           done
           for f in glassbox-windows-*.exe; do
             [ -f "$f" ] || continue
-            zip "${f%.exe}.zip" "$f"
+            zip --no-dir-entries -X -9 "${f%.exe}.zip" "$f"
             echo "  archived $f"
           done
 
-      - name: Generate checksums
+      - name: Generate checksums (sorted for reproducibility)
         run: |
           cd dist/release
-          sha256sum *.tar.gz *.zip version.txt > checksums.sha256
+          sha256sum *.tar.gz *.zip version.txt | LC_ALL=C sort > checksums.sha256
           cat checksums.sha256
 
       - name: Verify release artifacts
@@ -198,8 +217,399 @@ jobs:
           path: dist/release/
           retention-days: 30
 
+  # ── Generate SBOM: merge Go modules, Cargo crates, npm packages ─────────────
+  generate-sbom:
+    name: Generate SBOM (SPDX 2.3)
+    runs-on: ubuntu-latest
+    needs: [package]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Download packaged release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ steps.version.outputs.version }}
+          path: dist/release
+
+      - name: Install npm dependencies (for package-lock.json)
+        # We need package-lock.json to be present and up-to-date.
+        # `npm ci --ignore-scripts` is safe here — we only need the lockfile.
+        run: npm ci --ignore-scripts --prefer-offline
+
+      - name: Build generate-sbom tool
+        run: go build -o bin/generate-sbom ./cmd/generate-sbom
+
+      - name: Collect Go module list
+        run: go list -m -json all > /tmp/go-modules.json
+        env:
+          GOFLAGS: "-mod=readonly"
+
+      - name: Generate SBOM
+        id: sbom
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit }}
+          SBOM_TOOL: ${{ github.workspace }}/bin/generate-sbom
+          GO_MODULES_JSON: /tmp/go-modules.json
+          CARGO_LOCK: simulator/Cargo.lock
+          PACKAGE_LOCK: package-lock.json
+          DIST_DIR: dist/release
+        run: |
+          SBOM_FILE=$(bash scripts/generate-sbom.sh dist/release)
+          echo "sbom_file=${SBOM_FILE}" >> "$GITHUB_OUTPUT"
+          echo "sbom_name=$(basename "${SBOM_FILE}")" >> "$GITHUB_OUTPUT"
+          echo "SBOM written: ${SBOM_FILE}"
+
+      - name: Verify SBOM against lockfiles
+        run: |
+          bash scripts/verify-sbom.sh "${{ steps.sbom.outputs.sbom_file }}" \
+            --go-modules /tmp/go-modules.json \
+            --cargo-lock  simulator/Cargo.lock \
+            --package-lock package-lock.json \
+            --strict
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.version.outputs.version }}
+          path: ${{ steps.sbom.outputs.sbom_file }}
+          retention-days: 30
+
+      - name: Add SBOM to release package
+        # Merge the SBOM into the release artifact bundle so sign-manifest can
+        # hash it along with the binaries.
+        run: cp "${{ steps.sbom.outputs.sbom_file }}" dist/release/
+
+      - name: Re-upload release package with SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-with-sbom-${{ steps.version.outputs.version }}
+          path: dist/release/
+          retention-days: 30
+
+  # ── SBOM diff: compare against previous release ──────────────────────────────
+  sbom-diff:
+    name: SBOM diff (supply-chain review)
+    runs-on: ubuntu-latest
+    needs: [generate-sbom]
+    # Run on tag releases and on workflow_dispatch so the diff appears in
+    # release artifacts. For PRs the diff is informational only.
+    if: always() && needs.generate-sbom.result == 'success'
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download new SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ steps.version.outputs.version }}
+          path: dist/new-sbom
+
+      - name: Find previous release SBOM
+        id: prev_sbom
+        run: |
+          # Find the most recent tag before the current one.
+          CURRENT_TAG="${{ steps.version.outputs.version }}"
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "dirty" | grep -v "${CURRENT_TAG}" | head -1 || echo "")
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${PREV_TAG}" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No previous tag found — skipping SBOM diff baseline download."
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+            # Try to download the previous SBOM from GitHub releases.
+            PREV_SBOM_URL="https://github.com/${{ github.repository }}/releases/download/${PREV_TAG}/glassbox-${PREV_TAG}.spdx.json"
+            mkdir -p dist/prev-sbom
+            if curl -fsSL --max-time 30 "${PREV_SBOM_URL}" -o "dist/prev-sbom/prev.spdx.json" 2>/dev/null; then
+              echo "downloaded=true" >> "$GITHUB_OUTPUT"
+              echo "prev_sbom_path=dist/prev-sbom/prev.spdx.json" >> "$GITHUB_OUTPUT"
+            else
+              echo "downloaded=false" >> "$GITHUB_OUTPUT"
+              echo "Could not download previous SBOM from ${PREV_SBOM_URL}"
+            fi
+          fi
+
+      - name: Run SBOM diff
+        if: steps.prev_sbom.outputs.found == 'true' && steps.prev_sbom.outputs.downloaded == 'true'
+        id: diff
+        run: |
+          NEW_SBOM="$(ls dist/new-sbom/*.spdx.json | head -1)"
+          PREV_SBOM="${{ steps.prev_sbom.outputs.prev_sbom_path }}"
+
+          mkdir -p dist/sbom-diff
+
+          # Generate both text and JSON reports.
+          bash scripts/sbom-diff.sh \
+            "${PREV_SBOM}" \
+            "${NEW_SBOM}" \
+            --policy license-policy.json \
+            --output dist/sbom-diff/sbom-diff.json \
+            --format text \
+            2>&1 | tee dist/sbom-diff/sbom-diff.txt
+
+          bash scripts/sbom-diff.sh \
+            "${PREV_SBOM}" \
+            "${NEW_SBOM}" \
+            --policy license-policy.json \
+            --format markdown \
+            > dist/sbom-diff/sbom-diff.md 2>&1 || true
+
+      - name: SBOM diff summary (no previous release)
+        if: steps.prev_sbom.outputs.found != 'true' || steps.prev_sbom.outputs.downloaded != 'true'
+        run: |
+          mkdir -p dist/sbom-diff
+          echo '{"note": "No previous release SBOM available for comparison."}' > dist/sbom-diff/sbom-diff.json
+          echo "No previous release SBOM available for comparison." > dist/sbom-diff/sbom-diff.txt
+
+      - name: Upload SBOM diff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-diff-${{ steps.version.outputs.version }}
+          path: dist/sbom-diff/
+          retention-days: 30
+
+  # ── Vulnerability scan: osv-scanner across all three ecosystems ─────────────
+  sbom-vuln-scan:
+    name: Vulnerability scan (osv-scanner)
+    runs-on: ubuntu-latest
+    needs: [generate-sbom, sbom-diff]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ steps.version.outputs.version }}
+          path: dist/release
+
+      - name: Install osv-scanner
+        run: go install github.com/google/osv-scanner/cmd/osv-scanner@latest
+
+      - name: Run vulnerability scan
+        id: vuln
+        run: |
+          mkdir -p vuln-reports
+          bash scripts/sbom-vuln-scan.sh \
+            --go-sum        go.sum \
+            --cargo-lock    simulator/Cargo.lock \
+            --package-lock  package-lock.json \
+            --sbom          dist/release/$(ls dist/release/*.spdx.json 2>/dev/null | head -1 | xargs basename 2>/dev/null || echo "") \
+            --output-dir    vuln-reports \
+            --fail-on       HIGH \
+            --format        table
+
+      - name: Upload vulnerability scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vuln-scan-${{ steps.version.outputs.version }}
+          path: vuln-reports/
+          retention-days: 30
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always() && hashFiles('vuln-reports/osv-scan.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: vuln-reports/osv-scan.sarif
+          category: osv-scanner
+
+  # ── Sign manifest: hash every artifact, sign with Ed25519, verify ────────────
+  sign-manifest:
+    name: Sign release manifest
+    runs-on: ubuntu-latest
+    needs: [generate-sbom, sbom-vuln-scan]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Download packaged release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          # Prefer the bundle that already contains the SBOM (produced by generate-sbom).
+          # Fall back to the base package artifact when SBOM generation was skipped.
+          pattern: release-with-sbom-${{ steps.version.outputs.version }}
+          path: dist/release
+          merge-multiple: true
+
+      - name: Fallback — download base release if SBOM bundle missing
+        if: hashFiles('dist/release/checksums.sha256') == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ steps.version.outputs.version }}
+          path: dist/release
+
+      - name: Build manifest tool
+        run: |
+          go build -o bin/generate-release-manifest ./cmd/generate-release-manifest
+          echo "  manifest tool built: $(bin/generate-release-manifest --help 2>&1 | head -1 || true)"
+
+      - name: Generate and sign manifest
+        env:
+          GLASSBOX_MANIFEST_SIGNING_KEY: ${{ secrets.MANIFEST_SIGNING_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT_SHA: ${{ steps.version.outputs.commit }}
+          BUILD_DATE: ${{ steps.version.outputs.build_date }}
+          SIGNER_IDENTITY: ci-pipeline
+          # Build provenance fields — passed to sign-manifest.sh which
+          # forwards them to generate-release-manifest via environment.
+          BUILD_SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}
+          BUILD_SOURCE_REF: ${{ github.ref }}
+          BUILD_GO_VERSION: ""   # populated below
+          BUILD_RUNNER_OS: ${{ runner.os }}
+          BUILD_WORKFLOW: ${{ github.workflow_ref }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ -z "${GLASSBOX_MANIFEST_SIGNING_KEY}" ]; then
+            echo "::warning::MANIFEST_SIGNING_KEY secret is not set — skipping manifest signing."
+            echo "  To enable signing, add a MANIFEST_SIGNING_KEY repository secret."
+            echo "  Generate a key with: openssl genpkey -algorithm ed25519 -out release-key.pem"
+            exit 0
+          fi
+          # Capture Go version for provenance.
+          export BUILD_GO_VERSION="$(go version)"
+          MANIFEST_TOOL="$(pwd)/bin/generate-release-manifest" \
+            bash scripts/sign-manifest.sh dist/release
+
+      - name: Verify manifest (offline check)
+        # Run the pure-bash/python3 verifier — no Go toolchain needed.
+        run: |
+          if [ ! -f dist/release/manifest.json ]; then
+            echo "::warning::manifest.json not present (signing was skipped); skipping verification."
+            exit 0
+          fi
+          bash scripts/verify-manifest.sh dist/release/manifest.json dist/release
+
+      - name: Upload signed manifest
+        if: hashFiles('dist/release/manifest.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-manifest-${{ steps.version.outputs.version }}
+          path: dist/release/manifest.json
+          retention-days: 30
+
+      - name: Upload full release with manifest
+        if: hashFiles('dist/release/manifest.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-with-manifest-${{ steps.version.outputs.version }}
+          path: dist/release/
+          retention-days: 30
+
+  # ── Publish: create GitHub Release with all artifacts ────────────────────────
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [sign-manifest]
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Download release artifacts (with manifest if present)
+        uses: actions/download-artifact@v4
+        with:
+          # Prefer the bundle that includes manifest.json; fall back to the
+          # base package artifact when signing was skipped.
+          pattern: release-with-manifest-${{ steps.version.outputs.version }}
+          path: dist/release
+          merge-multiple: true
+
+      - name: Fallback — download base release if manifest bundle missing
+        if: hashFiles('dist/release/checksums.sha256') == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ steps.version.outputs.version }}
+          path: dist/release
+
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.version.outputs.version }}
@@ -230,12 +640,40 @@ jobs:
             ```bash
             sha256sum --check checksums.sha256
             ```
+
+            ### Verify signed manifest
+
+            ```bash
+            # Download the manifest and verification script
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/manifest.json
+            curl -LO https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/verify-manifest.sh
+
+            # Run offline verification (requires python3 + pip install cryptography)
+            bash verify-manifest.sh manifest.json .
+            ```
+
+            ### Verify the SBOM
+
+            ```bash
+            # Download the SBOM and verification script
+            curl -LO "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/glassbox-${{ steps.version.outputs.version }}.spdx.json"
+            curl -LO https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/verify-sbom.sh
+
+            # Structural validation + manifest coverage check (requires python3)
+            bash verify-sbom.sh "glassbox-${{ steps.version.outputs.version }}.spdx.json" \
+              --manifest manifest.json
+            ```
+
+            See [docs/sbom.md](https://github.com/${{ github.repository }}/blob/main/docs/sbom.md) for full SBOM documentation.
+
+            See [docs/release-manifest.md](https://github.com/${{ github.repository }}/blob/main/docs/release-manifest.md) for full verification instructions.
           files: |
             dist/release/*.tar.gz
             dist/release/*.zip
+            dist/release/*.spdx.json
             dist/release/checksums.sha256
             dist/release/version.txt
-
+            dist/release/manifest.json
   # ── Determinism check: same hash on Linux and macOS ─────────────────────────
   determinism:
     name: Canonical JSON determinism (${{ matrix.os }})
@@ -291,3 +729,129 @@ jobs:
             exit 1
           fi
           echo "[PASS] canonical JSON is deterministic across platforms"
+
+  # ── Reproducibility check: build linux-amd64 twice, compare SHA-256 ─────────
+  # Acceptance criterion: "CI runs a reproducibility check for at least one target."
+  reproducibility:
+    name: Reproducible build (linux/amd64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false   # disable cache — each build must be independent
+
+      - name: Resolve build inputs
+        id: inputs
+        run: |
+          echo "source_date_epoch=$(git log -1 --format=%ct)" >> "$GITHUB_OUTPUT"
+          echo "version=$(git describe --tags --always --dirty)"  >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)"                      >> "$GITHUB_OUTPUT"
+          # Derive build date from epoch so it is identical in both builds.
+          EPOCH="$(git log -1 --format=%ct)"
+          echo "build_date=$(date -u -d "@${EPOCH}" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build 1 (fresh GOPATH + GOCACHE)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+          GOPATH: /tmp/gopath-build1
+          GOCACHE: /tmp/gocache-build1
+          SOURCE_DATE_EPOCH: ${{ steps.inputs.outputs.source_date_epoch }}
+        run: |
+          mkdir -p /tmp/gopath-build1 /tmp/gocache-build1 dist/build1
+          go build \
+            -trimpath \
+            -ldflags "-s -w \
+              -X 'github.com/dotandev/glassbox/internal/version.Version=${{ steps.inputs.outputs.version }}' \
+              -X 'github.com/dotandev/glassbox/internal/version.CommitSHA=${{ steps.inputs.outputs.commit }}' \
+              -X 'github.com/dotandev/glassbox/internal/version.BuildDate=${{ steps.inputs.outputs.build_date }}'" \
+            -o dist/build1/glassbox-linux-amd64 \
+            ./cmd/glassbox
+          # Reproducible archive
+          tar --sort=name \
+              --owner=0 --group=0 --numeric-owner \
+              --mtime="@${{ steps.inputs.outputs.source_date_epoch }}" \
+              -czf dist/build1/glassbox-linux-amd64.tar.gz \
+              -C dist/build1 glassbox-linux-amd64
+
+      - name: Build 2 (separate GOPATH + GOCACHE)
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+          GOPATH: /tmp/gopath-build2
+          GOCACHE: /tmp/gocache-build2
+          SOURCE_DATE_EPOCH: ${{ steps.inputs.outputs.source_date_epoch }}
+        run: |
+          mkdir -p /tmp/gopath-build2 /tmp/gocache-build2 dist/build2
+          go build \
+            -trimpath \
+            -ldflags "-s -w \
+              -X 'github.com/dotandev/glassbox/internal/version.Version=${{ steps.inputs.outputs.version }}' \
+              -X 'github.com/dotandev/glassbox/internal/version.CommitSHA=${{ steps.inputs.outputs.commit }}' \
+              -X 'github.com/dotandev/glassbox/internal/version.BuildDate=${{ steps.inputs.outputs.build_date }}'" \
+            -o dist/build2/glassbox-linux-amd64 \
+            ./cmd/glassbox
+          tar --sort=name \
+              --owner=0 --group=0 --numeric-owner \
+              --mtime="@${{ steps.inputs.outputs.source_date_epoch }}" \
+              -czf dist/build2/glassbox-linux-amd64.tar.gz \
+              -C dist/build2 glassbox-linux-amd64
+
+      - name: Compare build outputs
+        run: |
+          echo "SOURCE_DATE_EPOCH : ${{ steps.inputs.outputs.source_date_epoch }}"
+          echo "Version           : ${{ steps.inputs.outputs.version }}"
+          echo ""
+
+          HASH1_BIN=$(sha256sum dist/build1/glassbox-linux-amd64     | awk '{print $1}')
+          HASH2_BIN=$(sha256sum dist/build2/glassbox-linux-amd64     | awk '{print $1}')
+          HASH1_ARC=$(sha256sum dist/build1/glassbox-linux-amd64.tar.gz | awk '{print $1}')
+          HASH2_ARC=$(sha256sum dist/build2/glassbox-linux-amd64.tar.gz | awk '{print $1}')
+
+          FAIL=0
+
+          if [ "${HASH1_BIN}" = "${HASH2_BIN}" ]; then
+            echo "  [PASS] binary:  ${HASH1_BIN}"
+          else
+            echo "  [FAIL] binary differs:"
+            echo "         build1: ${HASH1_BIN}"
+            echo "         build2: ${HASH2_BIN}"
+            FAIL=1
+          fi
+
+          if [ "${HASH1_ARC}" = "${HASH2_ARC}" ]; then
+            echo "  [PASS] archive: ${HASH1_ARC}"
+          else
+            echo "  [FAIL] archive differs:"
+            echo "         build1: ${HASH1_ARC}"
+            echo "         build2: ${HASH2_ARC}"
+            FAIL=1
+          fi
+
+          if [ "${FAIL}" -ne 0 ]; then
+            echo ""
+            echo "Reproducibility check failed."
+            echo "See docs/reproducible-builds.md#troubleshooting for next steps."
+            exit 1
+          fi
+
+          echo ""
+          echo "Result: build is reproducible for linux/amd64."
+
+      - name: Upload build outputs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducibility-diff-${{ github.run_id }}
+          path: |
+            dist/build1/
+            dist/build2/
+          retention-days: 3

@@ -371,6 +371,11 @@ func nodeToStateRows(node *trace.TraceNode) []StateRow {
 		if ref.Column > 0 {
 			loc = fmt.Sprintf("%s:%d", loc, ref.Column)
 		}
+		// Append the origin class label for non-user frames so the detail
+		// panel immediately shows whether the source is generated or external.
+		if label := sourceOriginLabel(ref.OriginClass); label != "" {
+			loc = loc + "  " + label
+		}
 		add("source", loc)
 		if ref.Function != "" {
 			add("src_function", ref.Function)
@@ -390,6 +395,22 @@ func nodeToStateRows(node *trace.TraceNode) []StateRow {
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
+
+// sourceOriginLabel returns the display label for a SourceRef.OriginClass
+// string. It mirrors the logic in internal/trace/formatter.go without
+// importing the sourcemap package, avoiding an import cycle.
+func sourceOriginLabel(class string) string {
+	switch class {
+	case "generated":
+		return "[generated]"
+	case "external":
+		return "[external]"
+	case "unknown":
+		return "[unknown origin]"
+	default:
+		return ""
+	}
+}
 
 func padOrClip(s string, width int) string {
 	if width <= 0 {

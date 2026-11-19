@@ -16,7 +16,20 @@ import (
 //
 // If simResp is nil or has no diagnostic events, a minimal trace is returned
 // with zero states (callers should check len(trace.States) before exporting).
+//
+// A StateChangeDetector may be supplied via detector to record step-level
+// ledger key dependencies as the trace is built. Passing nil disables
+// dependency recording without affecting any other behaviour.
 func BuildExecutionTraceFromSimResponse(txHash string, simResp *simulator.SimulationResponse) *ExecutionTrace {
+	return BuildExecutionTraceFromSimResponseWithDetector(txHash, simResp, nil)
+}
+
+// BuildExecutionTraceFromSimResponseWithDetector is the full form of
+// BuildExecutionTraceFromSimResponse. It accepts an optional
+// *StateChangeDetector; when non-nil, every ledger key present in a step's
+// HostState is recorded as a dependency for that step so that incremental
+// refresh can later compute the minimal re-simulation range.
+func BuildExecutionTraceFromSimResponseWithDetector(txHash string, simResp *simulator.SimulationResponse, detector *StateChangeDetector) *ExecutionTrace {
 	t := NewExecutionTrace(txHash, DefaultSnapshotInterval)
 	t.StartTime = time.Now()
 
@@ -73,6 +86,19 @@ func BuildExecutionTraceFromSimResponse(txHash string, simResp *simulator.Simula
 			state.HostState = hs
 		}
 		t.AddState(state)
+
+		// Record ledger key dependencies for every key present in this
+		// step's HostState. This populates the detector's dependency map so
+		// that UpdateSnapshot can later identify which steps are affected by
+		// each changed ledger entry and compute the minimal refresh range.
+		if detector != nil {
+			stepIdx := len(t.States) - 1
+			for key := range state.HostState {
+				detector.RecordStateDependency(stepIdx, key)
+			}
+			// Also capture a state fingerprint for drift detection.
+			detector.RecordStateFingerprint(stepIdx, &state)
+		}
 	}
 
 	t.EndTime = time.Now()

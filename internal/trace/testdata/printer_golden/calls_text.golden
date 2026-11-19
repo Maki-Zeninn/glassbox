@@ -1,0 +1,39 @@
+Glassbox Trace Export
+=====================
+
+Transaction: 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+Steps:       3
+Started:     2026-01-01T00:00:00Z
+Ended:       2026-01-01T00:00:05Z
+
+Step 0: contract_call
+  Operation: contract_call
+  Event:     contract_call
+  Contract:  CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  Function:  transfer
+  Arguments: [GALICE GBOB 100]
+  Return:    ok
+    - operation: contract_call
+    - contract: CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    - function: transfer
+    - arguments: [GALICE GBOB 100]
+
+Step 1: host_function
+  Operation: host_function
+  Event:     host_function
+  Function:  put_ledger_entry
+  Arguments: []
+  Return:    true
+    - operation: host_function
+    - function: put_ledger_entry
+
+Step 2: auth
+  Operation: auth
+  Event:     auth
+  Contract:  CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  Function:  require_auth
+  Arguments: []
+    - operation: auth
+    - contract: CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+    - function: require_auth
+

@@ -12,6 +12,8 @@ import (
 
 	"github.com/dotandev/glassbox/internal/errors"
 	"github.com/dotandev/glassbox/internal/report"
+	"github.com/dotandev/glassbox/internal/sarif"
+	"github.com/dotandev/glassbox/internal/security"
 	"github.com/dotandev/glassbox/internal/trace"
 	"github.com/spf13/cobra"
 )
@@ -30,6 +32,7 @@ var validReportFormats = map[string]bool{
 	"pdf,html": true,
 	"json":     true,
 	"text":     true,
+	"sarif":    true,
 }
 
 var reportCmd = &cobra.Command{
@@ -74,13 +77,13 @@ func validateReportFlags(cmd *cobra.Command, args []string) error {
 	if reportFile == "" {
 		return errors.WrapValidationError(
 			"--file is required; provide the path to a JSON trace file\n" +
-				"Usage: glassbox report --file <trace.json> [--format html|pdf|json|text]")
+				"Usage: glassbox report --file <trace.json> [--format html|pdf|json|text|sarif]")
 	}
 
 	// Validate --format early so the user gets a clear error before any I/O.
 	normalized := strings.ToLower(strings.TrimSpace(reportFormat))
 	if !validReportFormats[normalized] {
-		valid := "html, pdf, html,pdf, json, text"
+		valid := "html, pdf, html,pdf, json, text, sarif"
 		return errors.WrapValidationError(fmt.Sprintf(
 			"invalid --format %q; must be one of: %s", reportFormat, valid,
 		))
@@ -191,6 +194,25 @@ func reportExec(cmd *cobra.Command, args []string) error {
 
 	normalized := strings.ToLower(strings.TrimSpace(reportFormat))
 	switch normalized {
+	case "sarif":
+		// Derive security findings from the execution trace errors and events.
+		findings := deriveSecurityFindingsFromTrace(executionTrace)
+		sarifData, sarErr := sarif.ExportJSON(findings, sarif.ExportOptions{
+			ArtifactURI: reportFile,
+		})
+		if sarErr != nil {
+			return errors.WrapValidationError(fmt.Sprintf("failed to export SARIF: %v", sarErr))
+		}
+		filename := filepath.Join(reportOutput, "report.sarif")
+		if writeErr := os.WriteFile(filename, sarifData, 0o644); writeErr != nil {
+			return errors.WrapValidationError(fmt.Sprintf(
+				"failed to write SARIF to %q: %v", filename, writeErr,
+			))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "[OK] SARIF report generated: %s (%d finding(s))\n",
+			filename, len(findings))
+		return nil
+
 	case "text":
 		filename := filepath.Join(reportOutput, "report.txt")
 		if writeErr := os.WriteFile(filename, []byte(diagnosticReport.Text()), 0644); writeErr != nil {
@@ -312,11 +334,36 @@ func calculateRiskScore(states []trace.ExecutionState) float64 {
 }
 
 func init() {
-	reportCmd.Flags().StringVar(&reportFormat, "format", "html", "Output format: text, json, html, pdf, or html,pdf")
+	reportCmd.Flags().StringVar(&reportFormat, "format", "html", "Output format: text, json, html, pdf, html,pdf, or sarif")
 	reportCmd.Flags().StringVar(&reportOutput, "output", ".", "Output directory for reports")
 	reportCmd.Flags().StringVar(&reportFile, "file", "", "JSON trace file to analyze (required)")
 
 	_ = reportCmd.RegisterFlagCompletionFunc("format", completeReportFormatFlag)
 
 	rootCmd.AddCommand(reportCmd)
+}
+
+// deriveSecurityFindingsFromTrace converts an execution trace into a list of
+// Glassbox security findings for SARIF export. Each execution state that
+// contains an error is represented as a verified-risk finding. This is a
+// best-effort derivation; callers that want richer findings should use
+// 'glassbox scan' against the contract source directly.
+func deriveSecurityFindingsFromTrace(t *trace.ExecutionTrace) []security.Finding {
+	if t == nil {
+		return nil
+	}
+	var findings []security.Finding
+	for _, state := range t.States {
+		if state.Error == "" {
+			continue
+		}
+		findings = append(findings, security.Finding{
+			Type:        security.FindingVerifiedRisk,
+			Severity:    security.SeverityMedium,
+			Title:       "Execution Error in Trace",
+			Description: state.Error,
+			Evidence:    state.Operation,
+		})
+	}
+	return findings
 }

@@ -177,12 +177,22 @@ func LoadVersionedTrace(path string, compatOpts CompatibilityOptions) (*Executio
 				joinVersions(SupportedJSONSchemaVersions),
 			)
 		}
+		// Validate the schema version string itself (format, numeric components).
+		if err := ValidateJSONSchemaVersion(probe.SchemaVersion); err != nil {
+			return nil, fmt.Errorf(
+				"malformed schema_version %q in trace file %q: %w\n"+
+					"  Fix: re-export the trace with the current CLI — schema_version must be \"MAJOR.MINOR\"",
+				probe.SchemaVersion, path, err)
+		}
 		if probe.SchemaVersion != CurrentJSONSchemaVersion {
 			fmt.Fprintf(os.Stderr,
 				"Warning: trace file %q uses schema_version %q; current is %q\n"+
 					"  Consider re-exporting with the current CLI for full compatibility\n",
 				path, probe.SchemaVersion, CurrentJSONSchemaVersion,
 			)
+			// For schema version migration, we would need to reload the full envelope
+			// and apply MigrateTrace. For now, we load the trace directly since
+			// the structure is compatible between 1.0 and 2.0 schema versions.
 		}
 		return probe.Trace, nil
 	}
@@ -325,7 +335,10 @@ func migrateTrace(trace *ExecutionTrace, fromVersion, toVersion TraceFormatVersi
 		return nil, fmt.Errorf("cannot migrate nil trace")
 	}
 	
-	// Create a copy to avoid modifying original
+	// Create a copy to avoid modifying original. Annotations are deep-copied
+	// because they hold slices and a map — a shallow copy would leave the
+	// migrated trace sharing reviewer comments with the original, so editing
+	// one would silently edit the other.
 	migrated := &ExecutionTrace{
 		TransactionHash:  trace.TransactionHash,
 		StartTime:        trace.StartTime,
@@ -333,7 +346,7 @@ func migrateTrace(trace *ExecutionTrace, fromVersion, toVersion TraceFormatVersi
 		States:           make([]ExecutionState, len(trace.States)),
 		Snapshots:        trace.Snapshots,
 		DiagnosticEvents: trace.DiagnosticEvents,
-		Annotations:      trace.Annotations,
+		Annotations:      trace.Annotations.Clone(),
 		CurrentStep:      trace.CurrentStep,
 		SnapshotInterval: trace.SnapshotInterval,
 	}
@@ -459,11 +472,18 @@ func ValidateFormatCompatibility(trace *ExecutionTrace, format string, compatOpt
 		}
 	}
 	
+	// Surface reviewer comments whose targets no longer resolve. The comments
+	// are still exported — this only tells the operator that an anchor broke,
+	// typically because the trace was filtered or migrated since the review.
+	for _, w := range trace.AnnotationRefReport().Warnings() {
+		warnings = append(warnings, "Dangling annotation: "+w)
+	}
+
 	// Check for lossy conversions if downgrading
 	if compatOpts.AllowDowngrade {
 		warnings = append(warnings, "Downgrading to older format version may lose new features or fields")
 	}
-	
+
 	return warnings
 }
 

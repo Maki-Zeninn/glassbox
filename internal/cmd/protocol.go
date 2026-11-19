@@ -11,6 +11,7 @@ import (
 
 	"github.com/dotandev/glassbox/internal/clioutput"
 	"github.com/dotandev/glassbox/internal/deeplink"
+	"github.com/dotandev/glassbox/internal/plan"
 	"github.com/dotandev/glassbox/internal/protocolreg"
 	"github.com/spf13/cobra"
 )
@@ -57,18 +58,19 @@ If registration fails, run 'glassbox protocol:diagnose' for a root-cause breakdo
 
 		if protocolRegisterDryRun {
 			diag := registrar.Diagnose()
-			if diag.Status == protocolreg.StatusOK {
-				fmt.Fprintf(cmd.OutOrStdout(), "[DRY-RUN] Protocol handler is already registered — no changes needed.\n")
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "[DRY-RUN] Would register %s:// handler on %s.\n", protocolreg.Scheme, diag.Platform)
-				fmt.Fprintf(cmd.OutOrStdout(), "[DRY-RUN] Current status: %s\n", diag.Status)
-				if len(diag.Issues) > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), "[DRY-RUN] Issues to fix:\n")
-					for _, issue := range diag.Issues {
-						fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", issue)
-					}
-				}
+			execPath, execErr := os.Executable()
+			if execErr != nil {
+				execPath = "(unknown)"
 			}
+
+			execPlan := plan.BuildProtocolRegisterPlan(plan.ProtocolRegisterPlanOptions{
+				Platform:          diag.Platform,
+				ExecutablePath:    execPath,
+				AlreadyRegistered: diag.Status == protocolreg.StatusOK,
+				RegisteredHandler: diag.RegisteredHandler,
+			})
+
+			fmt.Fprint(cmd.OutOrStdout(), execPlan.RenderText())
 			return nil
 		}
 
@@ -270,11 +272,19 @@ Exit codes:
 	GroupID: "utility",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		parsed, err := protocolreg.ParseDebugURI(args[0])
+		raw := strings.TrimSpace(args[0])
+
+		// Dispatch glassbox://trace/ URIs to the trace-step navigator.
+		if strings.HasPrefix(raw, protocolreg.Scheme+"://trace/") {
+			return dispatchTraceStepURI(cmd, raw)
+		}
+
+		parsed, err := protocolreg.ParseDebugURI(raw)
 		if err != nil {
 			return fmt.Errorf(
 				"%w\n"+
 					"  Expected format: glassbox://debug/<64-char-hex>?network=<testnet|mainnet|futurenet>[&op=<n>][&view=<mode>]\n"+
+					"  or trace format: glassbox://trace/<64-char-hex>/step/<N>?network=<testnet|mainnet|futurenet>\n"+
 					"  Run 'glassbox protocol:handle --help' for full parameter documentation",
 				err,
 			)
@@ -314,6 +324,39 @@ Exit codes:
 		// Forward mock ledger entries when present.
 		for _, entry := range parsed.MockLedgerEntries {
 			debugArgs = append(debugArgs, "--mock-ledger-entry", entry)
+		}
+
+		// Validate W3C trace-context fields when present.
+		// Invalid trace context does not abort dispatch — it surfaces a warning
+		// so the user knows correlation may be incomplete without blocking the
+		// debug session.  The validated context is propagated to the child via
+		// environment variables so callers that embed trace propagation headers
+		// can correlate the debug session with an originating distributed trace.
+		tc := protocolreg.TraceContextFromURI(parsed)
+		if tc != nil {
+			validation := protocolreg.ValidateTraceContext(tc)
+			if !validation.OK {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"[WARN] trace context in URI has validation issues — "+
+						"distributed trace correlation may be incomplete:\n%s\n",
+					validation.Summary(),
+				)
+			} else {
+				// Propagate valid trace context via environment so the child
+				// debug process can attach to the originating trace span.
+				if tc.Traceparent != "" {
+					_ = os.Setenv("GLASSBOX_TRACEPARENT", tc.Traceparent)
+				}
+				if tc.Tracestate != "" {
+					_ = os.Setenv("GLASSBOX_TRACESTATE", tc.Tracestate)
+				}
+				if tc.TraceID != "" {
+					_ = os.Setenv("GLASSBOX_TRACE_ID", tc.TraceID)
+				}
+				if tc.SpanID != "" {
+					_ = os.Setenv("GLASSBOX_SPAN_ID", tc.SpanID)
+				}
+			}
 		}
 
 		child := exec.CommandContext(cmd.Context(), executablePath, debugArgs...)
@@ -472,6 +515,63 @@ PERMISSION NOTES
 		}
 		return nil
 	},
+}
+
+// dispatchTraceStepURI handles a glassbox://trace/<txhash>/step/<N> URI by
+// validating it and re-invoking the binary with appropriate flags.
+//
+// Currently the trace-step URI triggers `glassbox trace --step N --network
+// <net> [--source-file <f>] [--source-line <n>] <txhash>`.  When the trace
+// command or extension server is not running the user receives a clear error
+// with a fix hint rather than a silent failure.
+func dispatchTraceStepURI(cmd *cobra.Command, raw string) error {
+	parsed, err := protocolreg.ParseTraceStepURI(raw)
+	if err != nil {
+		return fmt.Errorf(
+			"%w\n"+
+				"  Expected format: glassbox://trace/<64-char-hex>/step/<N>?network=<testnet|mainnet|futurenet>\n"+
+				"  Optional params: &file=<path>&line=<n>&col=<n>&view=<mode>\n"+
+				"  Run 'glassbox protocol:handle --help' for full parameter documentation",
+			err,
+		)
+	}
+
+	executablePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	traceArgs := []string{
+		"trace",
+		"--network", parsed.Network,
+		"--step", fmt.Sprintf("%d", parsed.StepIndex),
+	}
+
+	if parsed.File != "" {
+		traceArgs = append(traceArgs, "--source-file", parsed.File)
+	}
+	if parsed.Line > 0 {
+		traceArgs = append(traceArgs, "--source-line", fmt.Sprintf("%d", parsed.Line))
+	}
+	if parsed.View != "" {
+		traceArgs = append(traceArgs, "--view", parsed.View)
+	}
+
+	// Transaction hash is the positional argument for the trace command.
+	traceArgs = append(traceArgs, parsed.TransactionHash)
+
+	child := exec.CommandContext(cmd.Context(), executablePath, traceArgs...)
+	child.Stdout = cmd.OutOrStdout()
+	child.Stderr = cmd.ErrOrStderr()
+	if runErr := child.Run(); runErr != nil {
+		return fmt.Errorf(
+			"trace-step navigation failed for step %d of tx %s: %w\n"+
+				"  Tip: run 'glassbox trace --step %d --network %s %s' to debug this directly",
+			parsed.StepIndex, parsed.TransactionHash, runErr,
+			parsed.StepIndex, parsed.Network, parsed.TransactionHash,
+		)
+	}
+	return nil
 }
 
 func init() {

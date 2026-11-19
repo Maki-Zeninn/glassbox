@@ -1,0 +1,27 @@
+# 1120: audit:verify directory policy enforcement
+
+category = "cli"
+pr = 0
+summary = "Add strict, warn and permissive policy levels for audit directory hash chain verification"
+details = """
+`internal/audit` gains a policy level that maps the outcome of directory
+verification onto an exit code, covering the case where every file verifies
+individually but the collection has been tampered with:
+
+- `strict`      any chain irregularity is fatal (the default)
+- `warn`        chain irregularities are reported, exit code stays 0
+- `permissive`  only cryptographic signature failures are fatal
+
+Signature verification is fatal at every level, because a bad signature means a
+file is not authentic rather than merely out of place. An unrecognised level
+falls back to `strict`, so a typo in a config file cannot silently downgrade an
+audit to advisory-only.
+
+`PolicyEnforcer.EnforceResult` adapts an existing `DirPolicyResult` from
+`VerifyDirectoryWithPolicy` into the ordered issue list the levels are applied
+to, so no existing verification code changes behaviour.
+"""
+breaking = false
+migration_note = ""
+affects = ["exit-codes", "go-api"]
+compatibility = "beta"

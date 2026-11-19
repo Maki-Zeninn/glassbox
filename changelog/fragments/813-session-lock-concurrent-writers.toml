@@ -1,0 +1,33 @@
+# Changelog fragment for issue #813
+# See changelog/fragments/README.md for the schema.
+
+[[changes]]
+type = "feature"
+breaking = false
+summary = "Add session advisory locking and optimistic revision checks to prevent concurrent writers from silently overwriting session data"
+issue = 813
+pull_request = 0
+
+[[changes.detail]]
+text = """
+Two Glassbox processes saving the same session simultaneously could lose
+annotations or corrupt metadata.  This change adds a two-layer concurrency
+policy:
+
+1. **Advisory lock file** — a per-session `.lock` file in
+   `~/.Glassbox/locks/` serialises concurrent writers.  Stale locks from
+   crashed processes are detected (dead PID + file age ≥ 5 min) and removed
+   automatically by the next writer or by `glassbox session doctor`.
+
+2. **Optimistic revision check** — the `Data` struct and `sessions` table now
+   carry a `revision` counter that increments on every successful save.  A
+   writer that supplies a stale revision receives a structured
+   `SESSION_WRITE_CONFLICT` error (exit 1) with a remediation hint.
+
+New surface:
+- `Store.SaveForce` — bypasses the revision check for deliberate overwrites.
+- `glassbox session save --force` — CLI flag to force-overwrite a conflict.
+- `CleanStaleLocks()` — called by `glassbox session doctor`.
+- Stable error codes: `SESSION_WRITE_CONFLICT`, `SESSION_LOCK_HELD`.
+- Documentation: `docs/session-locking.md`.
+"""

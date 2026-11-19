@@ -98,6 +98,53 @@ are always consistent.
 |---|---|---|
 | `SOURCE_DISCOVERY_FAILED` | Source mapping unavailable for contract | 3 |
 
+### Session concurrency (#813)
+
+| Code | Meaning | Exit |
+|---|---|---|
+| `SESSION_WRITE_CONFLICT` | A concurrent writer saved a newer revision; reload or use `--force` | 1 |
+| `SESSION_LOCK_HELD` | Advisory lock held by a live process; retry after it exits | 1 |
+
+---
+
+## Cross-reference: error codes and SARIF rules
+
+The same failure can surface in two forms: as a CLI error code in `--json`
+output and as a SARIF rule ID in `--format sarif` output. These are
+**related but not identical**: an error code describes why a command failed,
+while a SARIF rule ID describes a specific class of finding inside a run.
+
+No runtime mapping is performed between the two systems — the relationship is
+informational only, to help you correlate outputs without mistaking one for
+the other.
+
+| ErstErrorCode | Related SARIF rule(s) | Nature of relationship |
+|---|---|---|
+| `SOURCE_DISCOVERY_FAILED` | `GB1002` (`SourceMapDwarfMissing`) | Both indicate a contract without usable debug symbols, but `SOURCE_DISCOVERY_FAILED` means the whole source-mapping stage was skipped; `GB1002` is emitted per-run when the binary has no DWARF sections at all. One does not imply the other. |
+| `SOURCE_DISCOVERY_FAILED` | `GB1001` (`SourceMapOffsetNotFound`) | `GB1001` is a narrower condition — a single WASM offset failed to resolve — and does not cause command failure. `SOURCE_DISCOVERY_FAILED` is fatal to the source-mapping pipeline. |
+| `SOURCE_DISCOVERY_FAILED` | `GB1003` (`SourceMapNoGitRepository`) | `GB1003` is informational (`note` level) and does not fail the run; `SOURCE_DISCOVERY_FAILED` does. No direct causal link. |
+| `SIMULATION_LOGIC_ERROR` | `GB2001` (`DeprecatedHostFunction`) | A deprecated host function call is a SARIF warning, not a simulation logic error. `SIMULATION_LOGIC_ERROR` means the contract itself failed; `GB2001` means a specific function is deprecated and may fail in a future protocol release. |
+| `SIMULATION_LOGIC_ERROR` | `GB2002` (`AllowlistedUnsafeHostFunction`) | Similarly, `GB2002` is a security finding about an unsafe-but-permitted call; it does not cause `SIMULATION_LOGIC_ERROR` unless the unsafe call is also the cause of the simulation trap. |
+| `VALIDATION_FAILED` | *(no direct mapping)* | Validation failures happen before analysis begins; no SARIF output is produced. |
+| `RPC_CONNECTION_FAILED` | *(no direct mapping)* | Network errors prevent the run from producing any SARIF findings. |
+
+### Reading correlations across output formats
+
+When a `glassbox scan` or `glassbox debug` run produces both `--json` and
+`--format sarif` output, use the following approach to correlate them:
+
+1. Check `--json` for `error.code` to understand why the command failed.
+2. Inspect the SARIF `results[]` array for rule IDs in the `GB1xxx`/`GB2xxx`
+   range — these are diagnostic findings from the same run.
+3. Do not assume a SARIF result means the corresponding error code was set, or
+   vice versa.  A run can produce `GB1001` warnings and still exit 0; and a
+   `SOURCE_DISCOVERY_FAILED` error can occur without any `GB1xxx` result if
+   the discovery failure happened before SARIF export ran.
+
+For the full SARIF rule catalogue see
+[sarif-diagnostic-rules.md](sarif-diagnostic-rules.md) and
+[sarif-export.md](sarif-export.md).
+
 ## Adding a new code
 
 1. Add the constant to `internal/errors/glassbox_error_code.go`.

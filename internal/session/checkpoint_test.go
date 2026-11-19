@@ -70,7 +70,7 @@ func TestCheckpoint_LoadMalformed(t *testing.T) {
 func TestCheckpoint_ClearRemovesFile(t *testing.T) {
 	overrideCheckpointDir(t)
 
-	require.NoError(t, WriteCheckpoint(&Checkpoint{SessionID: "x"}))
+	require.NoError(t, WriteCheckpoint(&Checkpoint{SessionID: "x", TxHash: "txhash", Network: "testnet"}))
 	require.NoError(t, ClearCheckpoint())
 
 	loaded, err := LoadCheckpoint()
@@ -195,7 +195,7 @@ func TestCheckpoint_WriteCreatesGlassboxDir(t *testing.T) {
 	// Ensure the directory does not exist before write.
 	require.NoError(t, os.RemoveAll(glassboxDir))
 
-	require.NoError(t, WriteCheckpoint(&Checkpoint{SessionID: "new"}))
+	require.NoError(t, WriteCheckpoint(&Checkpoint{SessionID: "new", TxHash: "txhash", Network: "testnet"}))
 	_, err := os.Stat(glassboxDir)
 	assert.NoError(t, err, ".Glassbox directory should be created automatically")
 }

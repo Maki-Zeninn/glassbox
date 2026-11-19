@@ -54,14 +54,32 @@ type SourceContext struct {
 
 // Detector analyzes transactions for security vulnerabilities
 type Detector struct {
-	findings []Finding
+	findings          []Finding
+	suppressionRegistry *SuppressionRegistry
+	scopeValue        string // Contract ID, path, or transaction hash for scoped suppressions
 }
 
 // NewDetector creates a new security detector
 func NewDetector() *Detector {
 	return &Detector{
-		findings: make([]Finding, 0),
+		findings:           make([]Finding, 0),
+		suppressionRegistry: NewSuppressionRegistry(),
 	}
+}
+
+// NewDetectorWithSuppression creates a new security detector with a suppression registry.
+func NewDetectorWithSuppression(registry *SuppressionRegistry, scopeValue string) *Detector {
+	return &Detector{
+		findings:           make([]Finding, 0),
+		suppressionRegistry: registry,
+		scopeValue:        scopeValue,
+	}
+}
+
+// SetSuppressionRegistry sets the suppression registry for this detector.
+func (d *Detector) SetSuppressionRegistry(registry *SuppressionRegistry, scopeValue string) {
+	d.suppressionRegistry = registry
+	d.scopeValue = scopeValue
 }
 
 // Analyze performs security checks on transaction data
@@ -164,6 +182,23 @@ func (d *Detector) ScanSourcePath(path string, spec *abi.ContractSpec) ([]Findin
 // GetFindings returns all detected findings
 func (d *Detector) GetFindings() []Finding {
 	return d.findings
+}
+
+// GetFindingsWithSuppression returns active and suppressed findings.
+func (d *Detector) GetFindingsWithSuppression() DetectorResultWithSuppression {
+	if d.suppressionRegistry == nil {
+		return DetectorResultWithSuppression{
+			ActiveFindings:     d.findings,
+			SuppressedFindings: []SuppressedFinding{},
+		}
+	}
+	
+	scopeValue := NormalizeScopeValue(d.scopeValue)
+	active, suppressed := d.suppressionRegistry.ApplyToFindings(d.findings, scopeValue)
+	return DetectorResultWithSuppression{
+		ActiveFindings:     active,
+		SuppressedFindings: suppressed,
+	}
 }
 
 func (d *Detector) addFinding(finding Finding) {

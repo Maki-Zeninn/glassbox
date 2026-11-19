@@ -66,6 +66,21 @@ func (r *Registrar) HealthCheck() *HealthReport {
 	}
 	report.Checks = append(report.Checks, fmt.Sprintf("executable reachable: %s", r.executablePath))
 
+	// Step 1b: verify the binary is executable on Unix.
+	if runtime.GOOS != "windows" {
+		if info, statErr := os.Stat(r.executablePath); statErr == nil {
+			mode := info.Mode()
+			if mode&0o111 == 0 {
+				report.Status = HealthNotReady
+				report.Failures = append(report.Failures,
+					fmt.Sprintf("executable at %s is not executable (permissions: %04o)", r.executablePath, mode&0o777))
+				report.Hint = fmt.Sprintf("Run 'chmod +x %s' to make the binary executable.", r.executablePath)
+				return report
+			}
+			report.Checks = append(report.Checks, "executable has execute permission")
+		}
+	}
+
 	// Step 2: check the platform artefact.
 	switch runtime.GOOS {
 	case "linux":

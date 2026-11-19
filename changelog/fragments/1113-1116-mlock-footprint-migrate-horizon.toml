@@ -1,0 +1,18 @@
+[[changes]]
+type = "added"
+breaking = false
+summary = "Add mlock-backed SecureBytes signing, XDR footprint regressions, session migration journal, and Horizon bit-exact verify"
+issue = 1113
+pull_request = 0
+
+[[changes.detail]]
+text = """
+Issues #1113–#1116:
+
+- #1113: SecureBytes with mlock/VirtualLock for InMemorySigner seeds; Close() zeros
+  key material; MemoryLock status appears in audit key_origin metadata.
+- #1114: Structured XDR footprint regression + FuzzFootprintDecode coverage.
+- #1115: MigrationJournal with per-step savepoints; session resume --read-only;
+  session migrate --dry-run.
+- #1116: Horizon-backed bit-exact verification harness (integration build tag).
+"""

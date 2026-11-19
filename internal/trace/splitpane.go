@@ -22,10 +22,28 @@ const (
 
 // SourceRef links a trace node to a position in Rust source code.
 type SourceRef struct {
-	File     string
-	Line     int // 1-based; 0 = unknown
-	Column   int // 1-based; 0 = unknown
-	Function string
+	File       string `json:"file"`
+	Line       int    `json:"line"`   // 1-based; 0 = unknown
+	Column     int    `json:"column"` // 1-based; 0 = unknown
+	Function   string `json:"function,omitempty"`
+	// Confidence indicates the reliability of this source reference.
+	// If nil, confidence is unknown (backward compatible).
+	Confidence *Confidence `json:"confidence,omitempty"`
+	// OriginClass classifies where this source path came from.
+	// It is populated by the source-mapping pipeline via
+	// sourcemap.ClassifyPath and exposed in JSON exports so automation
+	// consumers can distinguish user code from generated build output or
+	// external crate dependencies without parsing raw file paths.
+	//
+	// Valid values (see internal/sourcemap/origin.go):
+	//   "user"      — developer-authored source under the project root
+	//   "generated" — machine-generated build output (target/, .wasm, …)
+	//   "external"  — external crate / dependency code (.cargo/registry, …)
+	//   "unknown"   — origin could not be determined
+	//
+	// Empty string is treated as "unknown" by display code for backward
+	// compatibility with traces produced before this field existed.
+	OriginClass string `json:"origin_class,omitempty"`
 }
 
 // SourceContext holds a windowed slice of source lines for the lower pane.
@@ -229,6 +247,11 @@ func nodeDisplayLines(node *TraceNode) []string {
 		loc := fmt.Sprintf("%s:%d", node.SourceRef.File, node.SourceRef.Line)
 		if node.SourceRef.Column > 0 {
 			loc = fmt.Sprintf("%s:%d:%d", node.SourceRef.File, node.SourceRef.Line, node.SourceRef.Column)
+		}
+		// Append the origin label so generated and external frames are
+		// clearly marked in the split-pane detail view.
+		if label := sourceRefOriginLabel(node.SourceRef.OriginClass); label != "" {
+			loc = loc + "  " + label
 		}
 		out = append(out, fmt.Sprintf("Source:   %s", visualizer.Colorize(loc, "dim")))
 	}

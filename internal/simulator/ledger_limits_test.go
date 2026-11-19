@@ -129,6 +129,53 @@ func TestWarnLedgerEntriesSize_SilentWhenUnderLimit(t *testing.T) {
 	}
 }
 
+// TestWarnLedgerEntriesSize_ExceedLimit verifies that WarnLedgerEntriesSize
+// emits a warning containing "WARNING" and the entry count when two entries
+// whose combined decoded size exceeds MaxLedgerEntriesSizeBytes are supplied.
+func TestWarnLedgerEntriesSize_ExceedLimit(t *testing.T) {
+	// Two entries, each with a key of 128 bytes and a value of 512 KiB.
+	// Combined decoded size = 2 * (128 + 524288) ≈ 1.0 MiB + 256 B → over limit.
+	bigValue := MaxLedgerEntriesSizeBytes/2 + 1 // 512 KiB + 1 byte per entry
+	entries := map[string]string{
+		makeEntry(128): makeEntry(bigValue),
+		makeEntry(64):  makeEntry(bigValue),
+	}
+
+	var buf bytes.Buffer
+	warned := WarnLedgerEntriesSize(entries, &buf)
+
+	if !warned {
+		t.Fatal("expected WarnLedgerEntriesSize to return true when entries exceed the limit")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("expected output to contain %q, got: %q", "WARNING", out)
+	}
+	if !strings.Contains(out, "2 entries") {
+		t.Errorf("expected output to contain %q, got: %q", "2 entries", out)
+	}
+}
+
+// TestWarnLedgerEntriesSize_WithinLimit verifies that WarnLedgerEntriesSize
+// writes nothing and returns false when entries are well within the size limit.
+func TestWarnLedgerEntriesSize_WithinLimit(t *testing.T) {
+	entries := map[string]string{
+		makeEntry(64):  makeEntry(256),
+		makeEntry(128): makeEntry(512),
+	}
+
+	var buf bytes.Buffer
+	warned := WarnLedgerEntriesSize(entries, &buf)
+
+	if warned {
+		t.Error("expected WarnLedgerEntriesSize to return false when entries are within the limit")
+	}
+	if buf.Len() > 0 {
+		t.Errorf("expected no output when within limit, got: %q", buf.String())
+	}
+}
+
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		input    int
@@ -140,9 +187,9 @@ func TestFormatBytes(t *testing.T) {
 		{2 * 1024 * 1024, "MiB"},
 	}
 	for _, tt := range tests {
-		got := formatBytes(tt.input)
+		got := formatLedgerBytes(tt.input)
 		if !strings.Contains(got, tt.contains) {
-			t.Errorf("formatBytes(%d) = %q, expected to contain %q", tt.input, got, tt.contains)
+			t.Errorf("formatLedgerBytes(%d) = %q, expected to contain %q", tt.input, got, tt.contains)
 		}
 	}
 }

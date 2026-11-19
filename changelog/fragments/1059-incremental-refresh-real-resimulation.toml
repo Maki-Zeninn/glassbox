@@ -1,0 +1,38 @@
+[[changes]]
+type = "feature"
+breaking = false
+summary = "Implement real simulator invocation in IncrementalRefresher.reSimulateStep"
+issue = 1059
+pull_request = 0
+
+[[changes.detail]]
+text = """
+IncrementalRefresher.reSimulateStep previously contained a TODO that cloned
+the original ExecutionState with only an updated timestamp, silently producing
+a stale refresh that did not actually re-execute the contract step with the
+new ledger state.
+
+Implementation:
+- reSimulateStep now constructs a SimulationRequest from the original state's
+  envelope XDR (stored in the Operation field for host-function invocations)
+  and the updated snapshot's ledger entries (via snapshot.Snapshot.ToMap()),
+  then calls r.runner.Run(ctx, req).
+- resolveEnvelopeXDR distinguishes envelope XDR strings from human-readable
+  event-type labels using a length heuristic (>= 64 chars), avoiding an import
+  cycle with the XDR decoder.
+- The response is matched back to the original state by contract ID + event type;
+  a first-event fallback handles cases where types change after a ledger update.
+- mergeSimEventIntoState applies the new event data (topics, data, contract ID)
+  onto a structural clone of the original state, preserving source references,
+  cost annotations, WASM instruction offsets, and GitHub links that the
+  simulator does not re-emit.
+- cloneStateWithTimestamp is extracted as a shared helper for the three fallback
+  paths (nil runner, no envelope XDR context, zero simulator events).
+- SkipSourceMapping is set on the re-simulation request; source mapping for the
+  refreshed trace is re-run by the caller after the full refresh completes,
+  not per-step.
+
+Backward compatibility: callers that create an IncrementalRefresher with a nil
+runner (e.g. pure structural manipulation, unit tests) still receive a
+timestamp-updated clone via the nil-runner fast path; no existing tests break.
+"""

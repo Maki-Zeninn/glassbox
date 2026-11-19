@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -121,22 +122,6 @@ func TestManifestValidate_UnknownCapability(t *testing.T) {
 	m.Capabilities = []Capability{"unknown_cap"}
 	if err := m.Validate(); err == nil {
 		t.Error("expected error for unknown capability")
-	}
-}
-
-func TestManifestValidate_AllCapabilities(t *testing.T) {
-	caps := []Capability{
-		CapabilityDecoder,
-		CapabilityAnalyzer,
-		CapabilityTraceViewer,
-		CapabilityArtifactLoader,
-	}
-	for _, cap := range caps {
-		m := validManifest()
-		m.Capabilities = []Capability{cap}
-		if err := m.Validate(); err != nil {
-			t.Errorf("expected capability %q to be valid, got: %v", cap, err)
-		}
 	}
 }
 
@@ -434,5 +419,109 @@ func TestDiscoverManifests_SkipsFiles(t *testing.T) {
 	}
 	if len(errs) != 0 {
 		t.Errorf("expected 0 errors, got %d", len(errs))
+	}
+}
+
+// ─── Capability-Permission Mapping (Issue #827) ──────────────────────────────
+
+func TestManifestValidate_SigningRequiresPermission(t *testing.T) {
+	m := validManifest()
+	m.Capabilities = []Capability{CapabilitySigning}
+	// CapabilitySigning requires PermissionReadFS and PermissionAccessEnv.
+	m.Permissions = nil
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for signing capability without required permissions")
+	}
+}
+
+func TestManifestValidate_SigningWithPermissions(t *testing.T) {
+	m := validManifest()
+	m.Capabilities = []Capability{CapabilitySigning}
+	m.Permissions = []Permission{PermissionReadFS, PermissionAccessEnv}
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected valid manifest with signing + required permissions, got: %v", err)
+	}
+}
+
+func TestManifestValidate_LoggingRequiresWriteFS(t *testing.T) {
+	m := validManifest()
+	m.Capabilities = []Capability{CapabilityLogging}
+	m.Permissions = nil
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for logging capability without write_fs permission")
+	}
+}
+
+func TestManifestValidate_LoggingWithPermissions(t *testing.T) {
+	m := validManifest()
+	m.Capabilities = []Capability{CapabilityLogging}
+	m.Permissions = []Permission{PermissionWriteFS}
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected valid manifest with logging + write_fs, got: %v", err)
+	}
+}
+
+// ─── Entrypoint path traversal (Issue #827) ─────────────────────────────────
+
+func TestManifestValidate_EntropyTraversal_Rejected(t *testing.T) {
+	m := validManifest()
+	m.Entrypoint = "../../bin/plugin"
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for entrypoint with path traversal")
+	}
+}
+
+func TestManifestValidate_EntropyTooLong_Rejected(t *testing.T) {
+	m := validManifest()
+	m.Entrypoint = strings.Repeat("a", 257)
+	if err := m.Validate(); err == nil {
+		t.Error("expected error for overly long entrypoint")
+	}
+}
+
+// ─── New capabilities and permissions (Issue #827) ──────────────────────────
+
+func TestManifestValidate_AllCapabilities(t *testing.T) {
+	caps := []Capability{
+		CapabilityDecoder,
+		CapabilityAnalyzer,
+		CapabilityTraceViewer,
+		CapabilityArtifactLoader,
+		CapabilitySigning,
+		CapabilityLogging,
+	}
+	for _, cap := range caps {
+		m := validManifest()
+		m.Capabilities = []Capability{cap}
+		// Add required permissions for capabilities that need them.
+		switch cap {
+		case CapabilitySigning:
+			m.Permissions = []Permission{PermissionReadFS, PermissionAccessEnv}
+		case CapabilityLogging:
+			m.Permissions = []Permission{PermissionWriteFS}
+		case CapabilityArtifactLoader:
+			m.Permissions = []Permission{PermissionReadFS}
+		}
+		if err := m.Validate(); err != nil {
+			t.Errorf("expected capability %q to be valid, got: %v", cap, err)
+		}
+	}
+}
+
+func TestManifestValidate_AllPermissions(t *testing.T) {
+	perms := []Permission{
+		PermissionReadFS,
+		PermissionNetwork,
+		PermissionWriteFS,
+		PermissionExecuteSubprocess,
+		PermissionAccessEnv,
+	}
+	for _, perm := range perms {
+		m := validManifest()
+		m.Capabilities = []Capability{CapabilityDecoder} // decoder has no required perms
+		m.Permissions = []Permission{perm}
+		if err := m.Validate(); err != nil {
+			t.Errorf("expected permission %q to be valid, got: %v", perm, err)
+		}
 	}
 }

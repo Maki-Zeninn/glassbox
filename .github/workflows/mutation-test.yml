@@ -3,9 +3,25 @@
 #
 # mutation-test.yml
 #
-# Runs mutation testing with gremlins against the validation packages listed
-# in MUTATION_PACKAGES (Makefile variable).  Uploads an actionable HTML/JSON
-# report as a GitHub Actions artifact and posts a summary to the job summary.
+# Runs mutation testing with gremlins in two modes:
+#
+#   1. Aggregate run  — all scoped packages together, global 70 % threshold.
+#      (mutation-test job)
+#
+#   2. Per-subsystem matrix — each high-risk subsystem runs independently with
+#      its own documented threshold.  Subsystem failures surface immediately
+#      without being masked by high scores in other subsystems.
+#      (mutation-subsystem-matrix job)
+#
+# Subsystems and thresholds:
+#   security      — internal/signer, internal/secutil     threshold: 75 %
+#   validation    — internal/cmd                          threshold: 70 %
+#   replay        — internal/replay, internal/deterministic threshold: 70 %
+#   serialization — internal/session, internal/manifest   threshold: 70 %
+#
+# Exclusions (see Makefile MUTATION_SUBSYSTEM_*_EXCLUDE for justifications):
+#   internal/signer/kms.go    — AWS KMS I/O; mutations require live HSM to kill
+#   internal/signer/pkcs11.go — PKCS#11 I/O; nondeterministic without real token
 #
 # Trigger policy
 # ───────────────
@@ -17,8 +33,9 @@
 #
 # Failure policy
 # ───────────────
-# The job fails when the mutation score falls below MUTATION_THRESHOLD (70 %).
-# The report is ALWAYS uploaded — even on pass — so reviewers can inspect
+# The aggregate job fails when the global score falls below 70 %.
+# Each subsystem job fails when its score falls below its documented threshold.
+# Reports are ALWAYS uploaded — even on pass — so reviewers can inspect
 # surviving mutants.  The retention period is longer than failure artifacts
 # because mutation reports are not sensitive.
 #
@@ -33,11 +50,19 @@ on:
 
   pull_request:
     paths:
-      # Only run when validation-critical code changes.
+      # Aggregate scope
       - "internal/cmd/**"
       - "internal/session/**"
       - "internal/trace/**"
       - "internal/simulator/**"
+      # Subsystem: security
+      - "internal/signer/**"
+      - "internal/secutil/**"
+      # Subsystem: replay
+      - "internal/replay/**"
+      - "internal/deterministic/**"
+      # Subsystem: serialization
+      - "internal/manifest/**"
       - "Makefile"
       - ".github/workflows/mutation-test.yml"
 
@@ -260,3 +285,201 @@ PYEOF
           fi
 
           echo "PASS: mutation score ${SCORE}% meets the threshold of ${THRESHOLD}%."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Per-subsystem mutation matrix
+  # ─────────────────────────────────────────────────────────────────────────
+  # Each cell is one high-risk subsystem with its own documented threshold.
+  # Running subsystems in parallel surfaces which subsystem is failing rather
+  # than masking a weak area behind a high aggregate score elsewhere.
+  mutation-subsystem-matrix:
+    name: Mutation — ${{ matrix.subsystem }} (threshold ${{ matrix.threshold }}%)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Security: signing, key derivation.  Higher bar because a surviving
+          # mutant here can mean an untested security invariant.
+          # Exclusions: kms.go and pkcs11.go require live hardware — see Makefile.
+          - subsystem: security
+            packages: "./internal/signer/... ./internal/secutil/..."
+            threshold: 75
+
+          # Validation: CLI flag parsing, path safety, input canonicalization.
+          - subsystem: validation
+            packages: "./internal/cmd/..."
+            threshold: 70
+
+          # Replay: deterministic replay boundaries.
+          - subsystem: replay
+            packages: "./internal/replay/... ./internal/deterministic/..."
+            threshold: 70
+
+          # Serialization: session archives, manifest signing, canonical JSON.
+          - subsystem: serialization
+            packages: "./internal/session/... ./internal/manifest/..."
+            threshold: 70
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gremlins
+        run: |
+          go install github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}
+          echo "gremlins version: $(gremlins --version 2>&1 || true)"
+
+      - name: Run mutation tests — ${{ matrix.subsystem }}
+        id: mutate
+        run: |
+          mkdir -p "${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}"
+          set +e
+          gremlins unleash \
+            --threshold="${{ matrix.threshold }}" \
+            --output="${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}/gremlins-report.json" \
+            --silent \
+            ${{ matrix.packages }} \
+            2>&1 | tee "${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}/gremlins.log"
+          MUTATION_EXIT=$?
+          set -e
+          echo "exit_code=${MUTATION_EXIT}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Generate subsystem summary
+        if: always()
+        id: summary
+        run: |
+          REPORT="${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}/gremlins-report.json"
+          if [ ! -f "${REPORT}" ]; then
+            echo "No report — gremlins may have crashed." >> "${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}/summary.txt"
+            exit 0
+          fi
+          python3 - "${REPORT}" "${{ matrix.threshold }}" \
+            "${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}/summary.txt" \
+            "$GITHUB_OUTPUT" "${{ matrix.subsystem }}" <<'PYEOF'
+import json, sys, collections, pathlib
+
+report_path  = sys.argv[1]
+threshold    = int(sys.argv[2])
+summary_path = sys.argv[3]
+output_path  = sys.argv[4]
+subsystem    = sys.argv[5]
+
+with open(report_path) as f:
+    data = json.load(f)
+
+total    = data.get("total_mutants", 0)
+killed   = data.get("killed", 0)
+survived = data.get("survived", 0)
+score    = round(killed / total * 100, 1) if total else 0.0
+status   = "PASS" if score >= threshold else "FAIL"
+
+lines = [
+    f"## Mutation — {subsystem} subsystem",
+    f"",
+    f"| Metric | Value |",
+    f"|--------|-------|",
+    f"| Subsystem | `{subsystem}` |",
+    f"| Total mutants | {total} |",
+    f"| Killed | {killed} |",
+    f"| Survived | {survived} |",
+    f"| Score | **{score}%** |",
+    f"| Threshold | {threshold}% |",
+    f"| Status | **{status}** |",
+    f"",
+]
+
+if survived:
+    by_pkg = collections.defaultdict(list)
+    for m in data.get("mutants", []):
+        if m.get("status") == "SURVIVED":
+            by_pkg[m.get("package", "unknown")].append(m)
+    lines += ["### Surviving mutants", ""]
+    for pkg in sorted(by_pkg):
+        lines.append(f"#### `{pkg}` ({len(by_pkg[pkg])} surviving)")
+        for m in by_pkg[pkg][:5]:
+            lines.append(f"- `{m.get('file','?')}:{m.get('line','?')}` — {m.get('mutation_type','?')}")
+        if len(by_pkg[pkg]) > 5:
+            lines.append(f"- … and {len(by_pkg[pkg])-5} more (see full JSON report)")
+        lines.append("")
+
+pathlib.Path(summary_path).write_text("\n".join(lines))
+with open(output_path, "a") as f:
+    f.write(f"score={score}\nstatus={status}\n")
+PYEOF
+
+      - name: Post subsystem summary to job
+        if: always()
+        run: |
+          SUMMARY="${MUTATION_REPORT_DIR}/${{ matrix.subsystem }}/summary.txt"
+          if [ -f "${SUMMARY}" ]; then
+            cat "${SUMMARY}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload subsystem report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report-${{ matrix.subsystem }}-${{ github.run_id }}
+          path: ${{ env.MUTATION_REPORT_DIR }}/${{ matrix.subsystem }}/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Enforce subsystem threshold
+        if: always()
+        run: |
+          EXIT="${{ steps.mutate.outputs.exit_code }}"
+          if [ "${EXIT}" != "0" ]; then
+            echo "FAIL: ${{ matrix.subsystem }} mutation score is below ${{ matrix.threshold }}%."
+            echo ""
+            echo "Download artifact 'mutation-report-${{ matrix.subsystem }}-${{ github.run_id }}' for details."
+            echo ""
+            echo "Exclusions for ${{ matrix.subsystem }} that survive intentionally are documented in the Makefile"
+            echo "under MUTATION_SUBSYSTEM_${{ matrix.subsystem }}_EXCLUDE."
+            exit 1
+          fi
+          echo "PASS: ${{ matrix.subsystem }} meets the ${{ matrix.threshold }}% threshold."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gate: both the aggregate run and all subsystems must pass
+  # ─────────────────────────────────────────────────────────────────────────
+  mutation-gate:
+    name: Mutation gate (aggregate + all subsystems)
+    runs-on: ubuntu-latest
+    needs: [ mutation-test, mutation-subsystem-matrix ]
+    if: always()
+
+    steps:
+      - name: Evaluate gate
+        run: |
+          agg="${{ needs.mutation-test.result }}"
+          sub="${{ needs.mutation-subsystem-matrix.result }}"
+          echo "aggregate result    : ${agg}"
+          echo "subsystem result    : ${sub}"
+
+          failed=0
+          for r in "${agg}" "${sub}"; do
+            if [[ "${r}" != "success" && "${r}" != "skipped" ]]; then
+              echo "::error::Mutation job result '${r}' indicates a threshold failure."
+              failed=1
+            fi
+          done
+
+          if [[ "${failed}" -eq 1 ]]; then
+            echo ""
+            echo "One or more mutation jobs failed.  Check the per-subsystem artifacts."
+            echo "Subsystem thresholds and exclusion justifications are in the Makefile"
+            echo "under MUTATION_SUBSYSTEM_* variables."
+            exit 1
+          fi
+
+          echo "All mutation jobs passed."

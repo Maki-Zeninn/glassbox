@@ -8,10 +8,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/errors"
@@ -37,6 +39,15 @@ const (
 	FilePerm        = 0600
 	DirPerm         = 0700
 	DefaultCacheTTL = 24 * time.Hour
+
+	// Immutable-data TTL – transactions and ledger headers are final once
+	// they appear on-chain; keep them for 30 days before eviction.
+	ImmutableTTL = 30 * 24 * time.Hour
+
+	// cache entry kind constants used to scope keys and schema entries.
+	kindTransaction   = "tx"
+	kindLedgerHeader  = "ledger_header"
+	kindLedgerEntry   = "ledger_entry"
 )
 
 // CachedEntry represents a single cached value.
@@ -48,23 +59,57 @@ type CachedEntry struct {
 	TTL       time.Duration `json:"ttl"`
 }
 
+// CacheStats holds observable hit/miss counters for the current process.
+// Values are updated atomically; read with LoadHits / LoadMisses.
+type CacheStats struct {
+	hits        int64
+	misses      int64
+	corruptions int64
+	evictions   int64
+}
+
+// Snapshot returns a point-in-time copy of the counters.
+type CacheStatsSnapshot struct {
+	Hits        int64
+	Misses      int64
+	Corruptions int64
+	Evictions   int64
+}
+
+var globalStats CacheStats
+
+// StatsSnapshot returns a snapshot of the global cache counters.
+func StatsSnapshot() CacheStatsSnapshot {
+	return CacheStatsSnapshot{
+		Hits:        atomic.LoadInt64(&globalStats.hits),
+		Misses:      atomic.LoadInt64(&globalStats.misses),
+		Corruptions: atomic.LoadInt64(&globalStats.corruptions),
+		Evictions:   atomic.LoadInt64(&globalStats.evictions),
+	}
+}
+
 var (
 	cacheDB *sql.DB
 	cacheMu sync.Mutex
 )
 
 // cacheSchema creates the rpc_cache table and indexes.
+// The checksum column holds a SHA-256 hex digest of value; a mismatch on
+// read causes the row to be treated as corrupted and discarded.
 const cacheSchema = `
 CREATE TABLE IF NOT EXISTS rpc_cache (
 	key_hash   TEXT PRIMARY KEY,
 	cache_key  TEXT NOT NULL,
 	value      TEXT NOT NULL,
 	network    TEXT NOT NULL DEFAULT '',
+	kind       TEXT NOT NULL DEFAULT '',
+	checksum   TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL,
 	expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rpc_cache_expires ON rpc_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_rpc_cache_network  ON rpc_cache(network);
+CREATE INDEX IF NOT EXISTS idx_rpc_cache_kind     ON rpc_cache(kind);
 `
 
 // GetCachePath returns the path to the cache directory, creating it if necessary.
@@ -158,6 +203,8 @@ func getCacheKey(key string) string {
 }
 
 // Get retrieves a value from the SQLite cache.
+// If the stored checksum does not match the value the row is evicted and
+// (false, nil) is returned so the caller falls through to a live fetch.
 // Returns (value, found, error).
 func Get(key string) (string, bool, error) {
 	db, err := ensureDB()
@@ -168,19 +215,30 @@ func Get(key string) (string, bool, error) {
 	keyHash := getCacheKey(key)
 	now := time.Now().UnixNano()
 
-	var value string
+	var value, checksum string
 	err = db.QueryRow(
-		"SELECT value FROM rpc_cache WHERE key_hash = ? AND expires_at > ?",
+		"SELECT value, checksum FROM rpc_cache WHERE key_hash = ? AND expires_at > ?",
 		keyHash, now,
-	).Scan(&value)
+	).Scan(&value, &checksum)
 
 	if err == sql.ErrNoRows {
+		atomic.AddInt64(&globalStats.misses, 1)
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("cache read failed: %w", err)
 	}
 
+	// Integrity check: only verify when a checksum was stored.
+	if checksum != "" && checksum != valueChecksum(value) {
+		atomic.AddInt64(&globalStats.corruptions, 1)
+		logger.Logger.Warn("Cache corruption detected, evicting entry", "key_hash", keyHash)
+		_, _ = db.Exec("DELETE FROM rpc_cache WHERE key_hash = ?", keyHash)
+		atomic.AddInt64(&globalStats.evictions, 1)
+		return "", false, nil
+	}
+
+	atomic.AddInt64(&globalStats.hits, 1)
 	return value, true, nil
 }
 
@@ -189,8 +247,15 @@ func SetWithTTL(key string, value string, ttl time.Duration) error {
 	return SetWithTTLAndNetwork(key, value, ttl, "")
 }
 
-// SetWithTTLAndNetwork stores a value in the cache with a specific TTL and network tag.
+// SetWithTTLAndNetwork stores a value in the cache with a specific TTL and
+// network tag. A SHA-256 checksum of value is stored alongside the row so
+// that corrupted entries can be detected and discarded on the next read.
 func SetWithTTLAndNetwork(key, value string, ttl time.Duration, network string) error {
+	return setEntry(key, value, ttl, network, "")
+}
+
+// setEntry is the single write path shared by all typed helpers.
+func setEntry(key, value string, ttl time.Duration, network, kind string) error {
 	if ttl <= 0 {
 		ttl = DefaultCacheTTL
 	}
@@ -201,22 +266,31 @@ func SetWithTTLAndNetwork(key, value string, ttl time.Duration, network string) 
 	}
 
 	keyHash := getCacheKey(key)
+	checksum := valueChecksum(value)
 	now := time.Now()
 
 	_, err = db.Exec(
-		`INSERT INTO rpc_cache (key_hash, cache_key, value, network, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO rpc_cache (key_hash, cache_key, value, network, kind, checksum, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(key_hash) DO UPDATE SET
 		   value      = excluded.value,
 		   network    = excluded.network,
+		   kind       = excluded.kind,
+		   checksum   = excluded.checksum,
 		   created_at = excluded.created_at,
 		   expires_at = excluded.expires_at`,
-		keyHash, key, value, network, now.UnixNano(), now.Add(ttl).UnixNano(),
+		keyHash, key, value, network, kind, checksum, now.UnixNano(), now.Add(ttl).UnixNano(),
 	)
 	if err != nil {
 		return fmt.Errorf("cache write failed: %w", err)
 	}
 	return nil
+}
+
+// valueChecksum returns the SHA-256 hex digest of v.
+func valueChecksum(v string) string {
+	h := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(h[:])
 }
 
 // Set stores a value using the default TTL.
@@ -351,4 +425,98 @@ func CountEntries() (int, error) {
 		return 0, fmt.Errorf("failed to count cache entries: %w", err)
 	}
 	return count, nil
+}
+
+// ─── Typed immutable-data cache helpers ─────────────────────────────────────
+//
+// Transactions and ledger headers are immutable once finalised on-chain.
+// The helpers below scope every cache key by network so that the same tx
+// hash on testnet and mainnet are stored as independent rows, and serialise
+// the typed response as JSON so the value can be reconstructed without any
+// additional RPC call.
+
+// txCacheKey returns the network-scoped cache key for a transaction hash.
+func txCacheKey(network, hash string) string {
+	return kindTransaction + ":" + network + ":" + hash
+}
+
+// ledgerHeaderCacheKey returns the network-scoped cache key for a ledger header.
+func ledgerHeaderCacheKey(network string, seq uint32) string {
+	return fmt.Sprintf("%s:%s:%d", kindLedgerHeader, network, seq)
+}
+
+// ledgerEntryCacheKey returns the network-scoped cache key for a ledger entry XDR key.
+func ledgerEntryCacheKey(network, xdrKey string) string {
+	return kindLedgerEntry + ":" + network + ":" + xdrKey
+}
+
+// SetTransaction serialises resp as JSON and stores it under a network-scoped,
+// content-addressed key. Transactions are immutable so ImmutableTTL is used.
+func SetTransaction(network, hash string, resp *TransactionResponse) error {
+	if resp == nil {
+		return nil
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("cache marshal tx: %w", err)
+	}
+	return setEntry(txCacheKey(network, hash), string(payload), ImmutableTTL, network, kindTransaction)
+}
+
+// GetTransaction retrieves a previously cached TransactionResponse.
+// Returns (nil, false, nil) on a cache miss or evicted-corruption entry.
+func GetTransaction(network, hash string) (*TransactionResponse, bool, error) {
+	raw, found, err := Get(txCacheKey(network, hash))
+	if !found || err != nil {
+		return nil, false, err
+	}
+	var resp TransactionResponse
+	if jsonErr := json.Unmarshal([]byte(raw), &resp); jsonErr != nil {
+		// JSON decode failure treated as corruption – evict.
+		atomic.AddInt64(&globalStats.corruptions, 1)
+		_ = Invalidate(txCacheKey(network, hash))
+		atomic.AddInt64(&globalStats.evictions, 1)
+		return nil, false, nil
+	}
+	return &resp, true, nil
+}
+
+// SetLedgerHeader serialises resp as JSON and stores it under a network-scoped key.
+func SetLedgerHeader(network string, seq uint32, resp *LedgerHeaderResponse) error {
+	if resp == nil {
+		return nil
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("cache marshal ledger header: %w", err)
+	}
+	return setEntry(ledgerHeaderCacheKey(network, seq), string(payload), ImmutableTTL, network, kindLedgerHeader)
+}
+
+// GetLedgerHeader retrieves a previously cached LedgerHeaderResponse.
+// Returns (nil, false, nil) on a cache miss.
+func GetLedgerHeader(network string, seq uint32) (*LedgerHeaderResponse, bool, error) {
+	raw, found, err := Get(ledgerHeaderCacheKey(network, seq))
+	if !found || err != nil {
+		return nil, false, err
+	}
+	var resp LedgerHeaderResponse
+	if jsonErr := json.Unmarshal([]byte(raw), &resp); jsonErr != nil {
+		atomic.AddInt64(&globalStats.corruptions, 1)
+		_ = Invalidate(ledgerHeaderCacheKey(network, seq))
+		atomic.AddInt64(&globalStats.evictions, 1)
+		return nil, false, nil
+	}
+	return &resp, true, nil
+}
+
+// SetLedgerEntry stores a single base64-XDR ledger entry value, scoped by network.
+func SetLedgerEntry(network, xdrKey, xdrValue string) error {
+	return setEntry(ledgerEntryCacheKey(network, xdrKey), xdrValue, ImmutableTTL, network, kindLedgerEntry)
+}
+
+// GetLedgerEntry retrieves a single cached ledger entry XDR value scoped by network.
+// Returns ("", false, nil) on cache miss.
+func GetLedgerEntry(network, xdrKey string) (string, bool, error) {
+	return Get(ledgerEntryCacheKey(network, xdrKey))
 }

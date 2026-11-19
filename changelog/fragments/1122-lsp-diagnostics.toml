@@ -1,0 +1,31 @@
+# 1122: LSP diagnostics for simulation results
+
+category = "cli"
+pr = 0
+summary = "Publish WASM traps, high-resource instructions and deprecated host function calls as LSP diagnostics"
+details = """
+`internal/lsp` gains a JSON-RPC 2.0 client and a diagnostics publisher so a
+developer sees simulation failures as inline editor annotations instead of
+mapping terminal output back to their source.
+
+- `client.go` speaks the LSP base protocol (`Content-Length` framing, JSON
+  bodies) over both Unix sockets and TCP, with every operation bounded by
+  `DefaultTimeout` (5s).
+- `diagnostics.go` translates a `SimulationResponse` into diagnostics at three
+  severities: a WASM trap is an Error, a run whose CPU cost exceeds
+  `ResourceCostThreshold` is a Warning annotated with the observed instruction
+  count, and a deprecated host function call is a Hint.
+- Source paths are made relative to the workspace root and converted to
+  `file://` URIs, with LSP's zero-based line convention applied.
+- `Publish` returns `ErrNoClient` rather than failing when no editor is
+  listening, which is what makes the interaction safe to wire into a command
+  that must not be blocked by a missing or wedged language server.
+
+Translation is a pure function (`TranslateSimulation`) that needs no socket, so
+it is unit-tested directly; the mock-server tests additionally cover the wire
+format.
+"""
+breaking = false
+migration_note = ""
+affects = ["go-api", "cli-flags"]
+compatibility = "experimental"

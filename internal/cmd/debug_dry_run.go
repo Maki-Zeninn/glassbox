@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dotandev/glassbox/internal/clioutput"
+	"github.com/dotandev/glassbox/internal/config"
+	"github.com/dotandev/glassbox/internal/plan"
 	"github.com/dotandev/glassbox/internal/rpc"
 	"github.com/dotandev/glassbox/internal/sourcemap"
 	"github.com/dotandev/glassbox/internal/trace"
@@ -330,5 +333,110 @@ func validateProtocolVersion(version uint32) error {
 			version, minSupportedProtocol, maxSupportedProtocol)
 	}
 
+	return nil
+}
+
+// runDebugDryRunPlan builds and renders an execution plan for the debug command
+// using the shared plan model. This replaces the ad hoc validation in the old
+// dry-run implementation with a structured, deterministic plan that shows exactly
+// what the command will do without performing any side effects.
+func runDebugDryRunPlan(cmd *cobra.Command, txHash string) error {
+	out := cmd.OutOrStdout()
+	errOut := cmd.ErrOrStderr()
+
+	// Run the same validation checks as the old dry-run, but collect failures
+	// for a structured report instead of printing immediately.
+	var failures []string
+
+	// Transaction hash format
+	if err := rpc.ValidateTransactionHash(txHash); err != nil {
+		failures = append(failures, fmt.Sprintf("transaction hash: %v", err))
+	}
+
+	// Network selection
+	if err := validateNetworkName(networkFlag); err != nil {
+		failures = append(failures, fmt.Sprintf("network: %v", err))
+	}
+
+	if compareNetworkFlag != "" {
+		if err := validateNetworkName(compareNetworkFlag); err != nil {
+			failures = append(failures, fmt.Sprintf("compare-network: %v", err))
+		} else if strings.EqualFold(networkFlag, compareNetworkFlag) {
+			failures = append(failures, fmt.Sprintf("compare-network: cannot be the same as primary network %q", networkFlag))
+		}
+	}
+
+	// RPC endpoint configuration
+	if rpcURLFlag != "" {
+		if err := validateRPCURL(rpcURLFlag); err != nil {
+			failures = append(failures, fmt.Sprintf("rpc-url: %v", err))
+		}
+	}
+
+	// Simulator binary check
+	simDep := checkSimulator(false)
+	if !simDep.Installed {
+		failures = append(failures, "simulator: binary not found or incompatible")
+	} else if simDep.Version != "" {
+		if err := validateSimulatorVersion(simDep.Version); err != nil {
+			failures = append(failures, fmt.Sprintf("simulator version: %v", err))
+		}
+	}
+
+	// If validation failed, print errors and exit
+	if len(failures) > 0 {
+		fmt.Fprintf(errOut, "Dry-run validation FAILED: %d error(s)\n", len(failures))
+		for i, f := range failures {
+			fmt.Fprintf(errOut, "  %d. %s\n", i+1, f)
+		}
+		return fmt.Errorf("dry-run validation failed with %d error(s)", len(failures))
+	}
+
+	// Validation passed - build and render the execution plan
+	simBinary := ""
+	if simDep.Installed {
+		simBinary = simDep.Path
+	}
+	simMode := "network"
+	rpcEndpoint := rpcURLFlag
+	if rpcEndpoint == "" {
+		cfg, cfgErr := config.Load()
+		if cfgErr == nil {
+			if len(cfg.SorobanRpcUrls) > 0 {
+				rpcEndpoint = cfg.SorobanRpcUrls[0]
+			} else if cfg.RpcUrl != "" {
+				rpcEndpoint = cfg.RpcUrl
+			}
+		}
+	}
+	var extraEndpoints []string
+	if cfg, cfgErr := config.Load(); cfgErr == nil && len(cfg.SorobanRpcUrls) > 1 {
+		extraEndpoints = cfg.SorobanRpcUrls[1:]
+	}
+
+	execPlan := plan.BuildDebugPlan(plan.DebugPlanOptions{
+		TxHash:              txHash,
+		Network:             networkFlag,
+		RPCEndpoint:         rpcEndpoint,
+		AdditionalEndpoints: extraEndpoints,
+		PinnedEndpoint:      pinEndpointFlag,
+		SimulatorBinary:     simBinary,
+		SimulatorMode:       simMode,
+		WasmPath:            wasmPath,
+		SnapshotPath:        snapshotFlag,
+		SaveSnapshotsPath:   saveSnapshotsFlag,
+		LoadSnapshotsPath:   loadSnapshotsFlag,
+		TraceOutputFile:     traceOutputFile,
+		AuditKey:            auditKeyFlag,
+		PublishIPFS:         publishIPFSFlag,
+		IPFSNode:            ipfsNodeFlag,
+		PublishArweave:      publishArweaveFlag,
+		ArweaveGateway:      arweaveGatewayFlag,
+		ExportSVG:           exportSVGFlag,
+		CacheDisabled:       noCacheFlag,
+		JSONOutput:          clioutput.WantsJSON(debugJSONFlag, debugFormatFlag),
+	})
+
+	fmt.Fprint(out, execPlan.RenderText())
 	return nil
 }

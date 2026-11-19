@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { createHash } from 'crypto';
-import stringify from 'fast-json-stable-stringify';
 import type { AuditSigner, HardwareAttestation } from './signing/types';
 import { assertValidAuditPayload } from './AuditPayloadSchema';
+import { canonicalizeJSON } from './canonical-json';
 
 // Define the structure of the execution trace
 export interface ExecutionTrace {
@@ -81,7 +81,7 @@ export class AuditLogger {
     const hashInput = attestation
       ? { trace, hardware_attestation: attestation }
       : { trace };
-    const canonicalString = stringify(hashInput);
+    const canonicalString = canonicalizeJSON(hashInput);
 
     // 3. Create the Hash (SHA-256 integrity check)
     // We hash the canonical string, not the raw object.
@@ -121,7 +121,8 @@ export class AuditLogger {
     // Validate payload before signing.
     assertValidAuditPayload(trace);
 
-    const canonicalString = stringify(trace);
+    const hashInput = { trace };
+    const canonicalString = canonicalizeJSON(hashInput);
     const traceHash = createHash('sha256').update(canonicalString).digest('hex');
 
     const signatures: SignatureEntry[] = [];

@@ -24,6 +24,7 @@ type SimulationResponse struct {
 	SourceLocation     *SourceLocation      `json:"source_location,omitempty"`
 	WasmOffset         *uint64              `json:"wasm_offset,omitempty"`
 	LinearMemoryDump   string               `json:"linear_memory_dump,omitempty"`
+	DeterministicSeed string               `json:"deterministic_seed,omitempty"` // Hex-encoded seed if deterministic mode was used
 }
 
 type OptimizationTip struct {

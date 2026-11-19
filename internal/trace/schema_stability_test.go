@@ -266,7 +266,7 @@ func TestLoadVersionedTrace_ExportJSONEnvelope_UnsupportedVersion(t *testing.T) 
 	tr := NewExecutionTrace("unsupported-schema", 10)
 	tr.AddState(ExecutionState{Operation: "op", Timestamp: time.Now()})
 
-	data, err := tr.ExportJSON("99.0", time.Now()) // future/unsupported version
+	data, err := tr.ExportJSONUnchecked("99.0", time.Now()) // future/unsupported version
 	if err != nil {
 		t.Fatalf("ExportJSON failed: %v", err)
 	}

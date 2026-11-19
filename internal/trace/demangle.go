@@ -22,9 +22,9 @@ func DemangleNode(node *TraceNode, table demangle.SymbolTable) {
 		return
 	}
 
-	node.Function = demangle.DemangleTrace(node.Function, table)
-	node.EventData = demangle.DemangleTrace(node.EventData, table)
-	node.ContractID = demangle.DemangleTrace(node.ContractID, table)
+	node.Function = demangle.SafeDemangleTrace(node.Function, table)
+	node.EventData = demangle.SafeDemangleTrace(node.EventData, table)
+	node.ContractID = demangle.SafeDemangleTrace(node.ContractID, table)
 }
 
 // DemangleTree walks the full trace tree rooted at node and rewrites every

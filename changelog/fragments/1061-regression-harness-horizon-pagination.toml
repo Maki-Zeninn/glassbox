@@ -1,0 +1,33 @@
+[[changes]]
+type = "fix"
+breaking = false
+summary = "Implement real Horizon pagination in RegressionHarness.fetchFailedTransactions"
+issue = 1061
+pull_request = 0
+
+[[changes.detail]]
+text = """
+RegressionHarness.fetchFailedTransactions previously returned an empty slice
+unconditionally, making glassbox regression --count N always report
+"no failed transactions found". The fix wires in real Horizon pagination.
+
+Implementation (internal/simulator/regression_harness.go):
+- fetchFailedTransactions now calls h.RPCClient.Horizon.Transactions() with
+  IncludeFailed=true, Order=desc, Limit=200 (Horizon's maximum page size).
+- When startSeq > 0, a cursor is constructed as
+  fmt.Sprintf("%d", uint64(startSeq)*4096) to position the Horizon cursor at
+  the approximate opening of that ledger (Horizon cursor = ledger * 4096 +
+  tx_index).
+- Only transactions with Successful==false are collected; successful
+  transactions are skipped without counting against the requested total.
+- Pagination advances by setting req.Cursor = last record's PagingToken()
+  after each page; the loop exits when the page is empty, the cursor is
+  unavailable, or count is satisfied.
+- Context cancellation is checked at the top of each page iteration so
+  long-running harvests respect deadlines.
+- If a mid-pagination network error occurs after at least one hash has been
+  collected, the partial result is returned with a warning rather than
+  discarding all progress.
+- A nil RPCClient guard returns an actionable error before any network call.
+- Added import: github.com/stellar/go-stellar-sdk/clients/horizonclient.
+"""

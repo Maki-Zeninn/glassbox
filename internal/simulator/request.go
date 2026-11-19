@@ -39,6 +39,9 @@ type SimulationRequest struct {
 	ContractSourcePath *string `json:"contract_source_path,omitempty"`
 	// SkipSourceMapping bypasses DWARF parsing and Git link generation for faster raw replay.
 	SkipSourceMapping bool `json:"skip_source_mapping,omitempty"`
+	// BuildManifestPath is the path to a glassbox-build-manifest.json that
+	// enables cross-machine source mapping from reproducible builds (Issue #45).
+	BuildManifestPath *string `json:"build_manifest_path,omitempty"`
 }
 
 type ResourceCalibration struct {

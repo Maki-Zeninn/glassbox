@@ -76,6 +76,12 @@ var (
 	ErrConfigFailed           = stdliberrors.New("configuration error")
 	ErrNetworkNotFound        = stdliberrors.New("network not found")
 	ErrMissingLedgerKey       = stdliberrors.New("missing ledger key in footprint")
+	// Footprint XDR decoder sentinels [Issue #1114]
+	ErrEmptyFootprint         = stdliberrors.New("empty ledger footprint")
+	ErrOverlappingFootprint   = stdliberrors.New("overlapping ledger key in footprint")
+	ErrOversizedFootprint     = stdliberrors.New("footprint exceeds MAX_LEDGER_ENTRIES")
+	ErrUnknownLedgerKeyType   = stdliberrors.New("unknown ledger key type")
+	ErrFootprintXDRVersion    = stdliberrors.New("footprint encoded with wrong XDR version prefix")
 	ErrWasmInvalid            = stdliberrors.New("invalid WASM file")
 	ErrSpecNotFound           = stdliberrors.New("contract spec not found")
 	ErrShellExit              = stdliberrors.New("exit")
@@ -84,6 +90,37 @@ var (
 	// ErrSourceDiscoveryFailed is returned when source discovery for a contract
 	// fails and no fallback path is available or all fallback stages were exhausted.
 	ErrSourceDiscoveryFailed = stdliberrors.New("source discovery failed")
+	// ErrRPCInvalidResponse is returned when a JSON-RPC response fails
+	// structural validation at the RPC boundary (missing required fields,
+	// wrong types, or invalid error envelope shape).
+	ErrRPCInvalidResponse = stdliberrors.New("RPC response failed validation")
+	// ErrSessionConflict is returned when a concurrent writer has already
+	// advanced the session revision past the value the caller last read
+	// [Issue #813].
+	ErrSessionConflict = stdliberrors.New("session write conflict")
+	// ErrSessionLockHeld is returned when the advisory lock for a session is
+	// currently held by another live process [Issue #813].
+	ErrSessionLockHeld = stdliberrors.New("session advisory lock is held by another process")
+	// ErrAnalysisTruncated is returned when the Go-side analysis pipeline was
+	// halted early due to a resource budget (timeout, max nodes, depth, or
+	// input bytes) being exhausted [Issue #838].  Partial findings already
+	// emitted are valid; deeper subtree findings are absent.
+	ErrAnalysisTruncated = stdliberrors.New("analysis truncated: resource budget exhausted")
+
+	// ErrKMSThrottled is returned when AWS KMS responds with a throttling
+	// error and the retry budget is exhausted [Issue #805].
+	ErrKMSThrottled = stdliberrors.New("KMS throttled: retry budget exhausted")
+	// ErrKMSUnauthorized is returned when KMS rejects a call due to
+	// insufficient permissions or key state [Issue #805].
+	ErrKMSUnauthorized = stdliberrors.New("KMS authorization failed")
+	// ErrKMSTransientFailure is returned when a KMS call fails with a
+	// transient infrastructure error and the retry budget is exhausted [Issue #805].
+	ErrKMSTransientFailure = stdliberrors.New("KMS transient failure: retry budget exhausted")
+
+	// ErrAuditDirPolicyViolation is returned when audit:verify-dir finds a
+	// directory-level policy violation that per-file checks alone would miss
+	// [Issue #806].
+	ErrAuditDirPolicyViolation = stdliberrors.New("audit directory policy violation")
 )
 
 type LedgerNotFoundError struct {
@@ -235,6 +272,19 @@ func WrapAllRPCFailed() error {
 	return &ErstError{
 		Code:    ErstAllRPCFailed,
 		Message: "all RPC endpoints failed",
+		Hint: "All configured RPC endpoints failed. Provide a working endpoint with --rpc-url <url>, " +
+			"run 'glassbox doctor' for a full environment check, or check 'glassbox status --network <name>'.",
+	}
+}
+
+// WrapAllRPCFailedWithDiagnostics wraps an all-endpoints-failed condition and
+// embeds the failure summary as part of the remediation hint so JSON output
+// carries the diagnostic context.
+func WrapAllRPCFailedWithDiagnostics(summary string) error {
+	return &ErstError{
+		Code:    ErstAllRPCFailed,
+		Message: "all RPC endpoints failed",
+		Hint:    summary,
 	}
 }
 
@@ -376,6 +426,50 @@ func WrapRPCRequestTooLarge(sizeBytes int64, maxSizeBytes int64) error {
 	)
 }
 
+// RPCInvalidResponseError is returned when a JSON-RPC response is structurally
+// invalid. It carries the endpoint URL and the RPC method name so diagnostics
+// can identify exactly which call produced the malformed data without echoing
+// any response body that might contain credentials.
+type RPCInvalidResponseError struct {
+	// Endpoint is the URL of the RPC server that returned the response.
+	Endpoint string
+	// Method is the JSON-RPC method name (e.g. "getLedgerEntries").
+	Method string
+	// Field is the name of the missing or invalid field, if known.
+	Field string
+	// Reason is a human-readable description of the validation failure.
+	Reason string
+}
+
+func (e *RPCInvalidResponseError) Error() string {
+	if e.Field != "" {
+		return fmt.Sprintf(
+			"%v: %s from %s: field %q: %s",
+			ErrRPCInvalidResponse, e.Method, e.Endpoint, e.Field, e.Reason,
+		)
+	}
+	return fmt.Sprintf(
+		"%v: %s from %s: %s",
+		ErrRPCInvalidResponse, e.Method, e.Endpoint, e.Reason,
+	)
+}
+
+func (e *RPCInvalidResponseError) Is(target error) bool {
+	return target == ErrRPCInvalidResponse
+}
+
+// WrapRPCInvalidResponse returns a diagnostic error for a structurally invalid
+// RPC response. No response body or credential data should be passed; only the
+// field name and a structural reason are included.
+func WrapRPCInvalidResponse(endpoint, method, field, reason string) error {
+	return &RPCInvalidResponseError{
+		Endpoint: endpoint,
+		Method:   method,
+		Field:    field,
+		Reason:   reason,
+	}
+}
+
 func WrapMissingLedgerKey(key string) error {
 	return &MissingLedgerKeyError{Key: key}
 }
@@ -396,6 +490,36 @@ func WrapSourceDiscoveryFailed(contractID string, hint string) error {
 		Code:    ErstSourceDiscoveryFailed,
 		Message: msg,
 		Hint:    h,
+	}
+}
+
+// WrapSessionConflict returns a structured error for a session write conflict
+// (concurrent-writer race, Issue #813).
+func WrapSessionConflict(sessionID string, expected, actual int64) error {
+	return &ErstError{
+		Code: ErstSessionConflict,
+		Message: fmt.Sprintf(
+			"session %q write conflict: expected revision %d but disk has revision %d",
+			sessionID, expected, actual,
+		),
+		Hint: "Another Glassbox process saved this session while you were editing it. " +
+			"Run 'glassbox session resume " + sessionID + "' to reload the latest version, " +
+			"or re-run your save with --force to overwrite it.",
+	}
+}
+
+// WrapSessionLockHeld returns a structured error when the advisory lock for a
+// session is currently held by a live process (Issue #813).
+func WrapSessionLockHeld(sessionID string, holderPID int) error {
+	return &ErstError{
+		Code: ErstSessionLockHeld,
+		Message: fmt.Sprintf(
+			"session %q advisory lock is held by process %d",
+			sessionID, holderPID,
+		),
+		Hint: "Another Glassbox instance is currently saving this session. " +
+			"Wait for it to finish and retry. If the other process has crashed, " +
+			"the lock will be cleared automatically after 5 minutes.",
 	}
 }
 
@@ -424,6 +548,36 @@ func WrapLedgerSequenceMismatch(txSeq, replaySeq uint32) error {
 	return &LedgerSequenceMismatchError{TxSequence: txSeq, ReplaySequence: replaySeq}
 }
 
+// WrapAnalysisTruncated returns a structured error indicating that the analysis
+// pipeline was halted early because a resource budget was exhausted [Issue #838].
+// phase identifies which phase was truncated (e.g. "depth_analysis",
+// "cost_annotation", "source_scan", "parser"), and reason names the budget that
+// triggered truncation (e.g. "timeout", "max_nodes", "max_depth", "max_bytes").
+// Callers must never present the accompanying partial findings as complete.
+func WrapAnalysisTruncated(phase, reason string) error {
+	return &ErstError{
+		Code:    ErstAnalysisTruncated,
+		Message: fmt.Sprintf("analysis phase %q truncated: %s budget exhausted", phase, reason),
+		Hint: "The analyzer reached a configured resource limit before completing. " +
+			"Reported findings are from the portion of the trace that was visited and are valid, " +
+			"but findings that required deeper traversal are absent. " +
+			"Raise --analyzer-timeout, --max-nodes, --max-depth, or --max-input-bytes to analyze the full trace.",
+	}
+}
+
+// WrapInternal wraps an unexpected internal failure (e.g. ID generation,
+// unexpected I/O) that does not belong to any more specific sentinel family
+// [Issue #762]. Using this instead of returning a bare fmt.Errorf keeps every
+// command-facing failure a stable ErstError with a consistent code and exit
+// bucket rather than surfacing as ErstUnknown to automation.
+func WrapInternal(msg string, err error) error {
+	return &ErstError{
+		Code:    ErstInternalError,
+		Message: fmt.Sprintf("%s: %v", msg, err),
+		OrigErr: err,
+	}
+}
+
 const (
 	// RPC origin
 	CodeRPCConnectionFailed  ErstErrorCode = "RPC_CONNECTION_FAILED"
@@ -438,6 +592,10 @@ const (
 	CodeTransactionNotFound  ErstErrorCode = "RPC_TRANSACTION_NOT_FOUND"
 	CodeLedgerNotFound       ErstErrorCode = "RPC_LEDGER_NOT_FOUND"
 	CodeLedgerArchived       ErstErrorCode = "RPC_LEDGER_ARCHIVED"
+	// CodeRPCInvalidResponse is emitted when a JSON-RPC response passes HTTP
+	// delivery but fails structural validation (missing required fields, wrong
+	// types, or an invalid error-envelope shape).
+	CodeRPCInvalidResponse ErstErrorCode = "RPC_INVALID_RESPONSE"
 
 	// Simulator origin
 	CodeSimNotFound            ErstErrorCode = "SIM_BINARY_NOT_FOUND"
@@ -446,6 +604,10 @@ const (
 	CodeSimMemoryLimitExceeded ErstErrorCode = "ERR_MEMORY_LIMIT_EXCEEDED"
 	CodeSimLogicError          ErstErrorCode = "SIM_LOGIC_ERROR"
 	CodeSimProtoUnsup          ErstErrorCode = "SIM_PROTOCOL_UNSUPPORTED"
+	// Aliases used by the simulator lifecycle mapper.
+	CodeSimulatorError    = CodeSimExecFailed
+	CodeSimulatorNotFound = CodeSimNotFound
+	CodeSimulatorCrashed  = CodeSimCrash
 
 	// Shared / general
 	CodeValidationFailed ErstErrorCode = "VALIDATION_FAILED"
@@ -468,6 +630,7 @@ var codeToSentinel = map[ErstErrorCode]error{
 	CodeTransactionNotFound:    ErrTransactionNotFound,
 	CodeLedgerNotFound:         ErrLedgerNotFound,
 	CodeLedgerArchived:         ErrLedgerArchived,
+	CodeRPCInvalidResponse:     ErrRPCInvalidResponse,
 	CodeSimNotFound:            ErrSimulatorNotFound,
 	CodeSimCrash:               ErrSimCrash,
 	CodeSimExecFailed:          ErrSimulationFailed,
@@ -476,6 +639,17 @@ var codeToSentinel = map[ErstErrorCode]error{
 	CodeSimProtoUnsup:          ErrProtocolUnsupported,
 	CodeValidationFailed:       ErrValidationFailed,
 	CodeConfigFailed:           ErrConfigFailed,
+	// Session concurrency [Issue #813]
+	ErstSessionConflict: ErrSessionConflict,
+	ErstSessionLockHeld: ErrSessionLockHeld,
+	// Analyzer resource budgets [Issue #838]
+	ErstAnalysisTruncated: ErrAnalysisTruncated,
+	// KMS signing [Issue #805]
+	ErstKMSThrottled:        ErrKMSThrottled,
+	ErstKMSUnauthorized:     ErrKMSUnauthorized,
+	ErstKMSTransientFailure: ErrKMSTransientFailure,
+	// Audit directory policy [Issue #806]
+	ErstAuditDirPolicyViolation: ErrAuditDirPolicyViolation,
 }
 
 // newErstError is the internal constructor.
@@ -512,4 +686,91 @@ func IsErstCode(err error, code ErstErrorCode) bool {
 		return e.Code == code
 	}
 	return false
+}
+
+// GetCode returns the ErstErrorCode carried by err, or CodeUnknown when the
+// error is not an *ErstError.
+func GetCode(err error) ErstErrorCode {
+	var e *ErstError
+	if As(err, &e) {
+		return e.Code
+	}
+	return CodeUnknown
+}
+
+// ── KMS signing errors [Issue #805] ─────────────────────────────────────────
+
+// WrapKMSThrottled returns a structured error when AWS KMS responds with
+// a throttling error and the retry budget is exhausted.
+// attempts is the number of KMS API calls that were made before giving up.
+// correlationID is the caller-supplied tracing id (may be empty).
+func WrapKMSThrottled(attempts int, correlationID string) error {
+	msg := fmt.Sprintf(
+		"KMS throttled after %d attempt(s)", attempts,
+	)
+	if correlationID != "" {
+		msg += fmt.Sprintf(" (correlation_id=%s)", correlationID)
+	}
+	return &ErstError{
+		Code:    ErstKMSThrottled,
+		Message: msg,
+		Hint: "AWS KMS is throttling requests. " +
+			"Increase GLASSBOX_KMS_MAX_RETRIES / GLASSBOX_KMS_MAX_BACKOFF_MS to absorb burst traffic, " +
+			"or reduce the signing rate. Use --audit-log-kms-key-id to confirm the correct key.",
+	}
+}
+
+// WrapKMSUnauthorized returns a structured error when AWS KMS rejects a
+// Sign or GetPublicKey call because of insufficient IAM permissions, an
+// invalid key ID, a disabled key, or a key pending deletion.
+// code is the raw AWS error code (e.g. "AccessDeniedException").
+// keyRef is a non-secret identifier for the key (alias, truncated ARN, etc.).
+func WrapKMSUnauthorized(code, keyRef string) error {
+	msg := fmt.Sprintf(
+		"KMS authorization failed (code=%s, key=%s)", code, keyRef,
+	)
+	return &ErstError{
+		Code:    ErstKMSUnauthorized,
+		Message: msg,
+		Hint: "Verify the IAM policy attached to this identity includes kms:Sign and kms:GetPublicKey " +
+			"for the target key, and that the key is Enabled (not Disabled or PendingDeletion). " +
+			"See docs/audit-kms-signing.md for the minimum IAM policy.",
+	}
+}
+
+// WrapKMSTransientFailure returns a structured error when a KMS call fails
+// with a transient infrastructure error (InternalError, ServiceUnavailable,
+// etc.) and the retry budget is exhausted without a successful result.
+// attempts is the total number of KMS API calls.
+// lastCode is the AWS error code from the final attempt.
+func WrapKMSTransientFailure(attempts int, lastCode, correlationID string) error {
+	msg := fmt.Sprintf(
+		"KMS transient failure after %d attempt(s), last code: %s", attempts, lastCode,
+	)
+	if correlationID != "" {
+		msg += fmt.Sprintf(" (correlation_id=%s)", correlationID)
+	}
+	return &ErstError{
+		Code:    ErstKMSTransientFailure,
+		Message: msg,
+		Hint: "AWS KMS returned a transient error. " +
+			"This is usually a brief AWS service disruption. " +
+			"Retry the command or increase GLASSBOX_KMS_MAX_RETRIES. " +
+			"If the problem persists, check the AWS Service Health Dashboard for your region.",
+	}
+}
+
+// ── Audit directory policy errors [Issue #806] ───────────────────────────────
+
+// WrapAuditDirPolicyViolation returns a structured error for directory-level
+// audit policy violations detected by audit:verify-dir.
+// summary is a brief description; details lists individual violations.
+func WrapAuditDirPolicyViolation(summary string, violationCount int) error {
+	return &ErstError{
+		Code:    ErstAuditDirPolicyViolation,
+		Message: fmt.Sprintf("%s (%d violation(s))", summary, violationCount),
+		Hint: "Run 'glassbox audit:verify-dir --json --dir <path>' for machine-readable details " +
+			"with per-file and aggregate results. Use --policy-config to load a policy file, " +
+			"or --expected-signers / --expected-schema-version to tighten checks.",
+	}
 }

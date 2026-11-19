@@ -4,6 +4,7 @@
 package signer
 
 import (
+	"crypto/ed25519"
 	"testing"
 )
 

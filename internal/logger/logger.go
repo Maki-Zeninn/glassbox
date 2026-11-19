@@ -1,6 +1,19 @@
 // Copyright 2026 Glassbox Users
 // SPDX-License-Identifier: Apache-2.0
 
+// Package logger provides structured logging with JSON and text output,
+// severity filtering, request correlation, log rotation, and retention.
+//
+// Stable JSON field names:
+//
+//	time        - RFC 3339 timestamp
+//	level       - severity string (DEBUG, INFO, WARN, ERROR)
+//	msg         - log message
+//	source      - file:line (added when AddSource=true)
+//	correlation_id - per-request/operation correlation ID (if set in context)
+//
+// Sensitive fields are redacted via RedactPIN and the sensitive-key denylist
+// before any bytes reach the underlying writer.
 package logger
 
 import (
@@ -18,6 +31,32 @@ var (
 	level  = new(slog.LevelVar)
 	mu     sync.Mutex
 )
+
+// sensitiveKeyPatterns lists key substrings whose values must always be
+// redacted in structured log records. Keys are matched case-insensitively.
+var sensitiveKeyPatterns = []string{
+	"pin",
+	"password",
+	"secret",
+	"token",
+	"private_key",
+	"privatekey",
+	"api_key",
+	"apikey",
+	"credential",
+}
+
+// isSensitiveKey returns true when the log attribute key matches a known
+// sensitive pattern. The caller should redact the value before emitting.
+func isSensitiveKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, pat := range sensitiveKeyPatterns {
+		if strings.Contains(lower, pat) {
+			return true
+		}
+	}
+	return false
+}
 
 // RedactPIN replaces any HSM PIN values in the input string with "*****".
 // This is used to prevent sensitive credentials from appearing in logs.
@@ -47,6 +86,44 @@ func (rw *redactingWriter) Write(p []byte) (n int, err error) {
 const (
 	LevelTrace = slog.Level(-8) // More verbose than Debug (-4)
 )
+
+// correlationKey is the context key used to store a per-request correlation ID.
+type correlationKey struct{}
+
+// WithCorrelation returns a new Context carrying the given correlation ID.
+// The correlation ID is automatically included in every structured log record
+// emitted via ContextLogger.
+func WithCorrelation(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, correlationKey{}, id)
+}
+
+// CorrelationFromContext extracts the correlation ID from ctx.
+// Returns "" when not set.
+func CorrelationFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if id, ok := ctx.Value(correlationKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
+// ContextLogger returns a *slog.Logger pre-populated with the correlation ID
+// stored in ctx (if any). When no correlation ID is present it returns the
+// global Logger unchanged.
+func ContextLogger(ctx context.Context) *slog.Logger {
+	if ctx == nil {
+		return Logger
+	}
+	if id := CorrelationFromContext(ctx); id != "" {
+		return Logger.With("correlation_id", id)
+	}
+	return Logger
+}
 
 func init() {
 	lvl := parseLevelFromEnv()
@@ -127,7 +204,7 @@ func initLogger(lvl slog.Level, w io.Writer, useJSON bool) {
 
 	var handler slog.Handler
 	if useJSON {
-		handler = slog.NewJSONHandler(w, &slog.HandlerOptions{
+		handler = newRedactingJSONHandler(w, &slog.HandlerOptions{
 			Level:     level,
 			AddSource: true,
 		})
@@ -153,10 +230,29 @@ func SetOutput(w io.Writer, useJSON bool) {
 	initLogger(level.Level(), w, useJSON)
 }
 
+// SetOutputWithRotation configures the global Logger to write JSON records to
+// path with rotation and retention support. Call Close on the returned
+// RotatingFileWriter to flush and release file handles.
+//
+// maxSizeBytes: rotate when the file exceeds this size (0 = no size limit).
+// maxAgeDays:   delete rotated files older than this many days (0 = keep all).
+func SetOutputWithRotation(path string, maxSizeBytes int64, maxAgeDays int, useJSON bool) (*RotatingFileWriter, error) {
+	rfw, err := NewRotatingFileWriter(path, maxSizeBytes, maxAgeDays)
+	if err != nil {
+		return nil, err
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	initLogger(level.Level(), rfw, useJSON)
+	return rfw, nil
+}
+
+// TextHandler wraps slog.TextHandler.
 type TextHandler struct {
 	handler slog.Handler
 }
 
+// NewTextHandler constructs a TextHandler.
 func NewTextHandler(w io.Writer, opts *slog.HandlerOptions) *TextHandler {
 	if opts == nil {
 		opts = &slog.HandlerOptions{}
@@ -171,8 +267,6 @@ func (h *TextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *TextHandler) Handle(ctx context.Context, record slog.Record) error {
-	// Use the underlying handler directly - redaction happens at the string level
-	// through the RedactPIN function which can be called by loggers when needed
 	return h.handler.Handle(ctx, record)
 }
 
@@ -182,6 +276,57 @@ func (h *TextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *TextHandler) WithGroup(name string) slog.Handler {
 	return &TextHandler{handler: h.handler.WithGroup(name)}
+}
+
+// redactingJSONHandler wraps slog.JSONHandler and redacts attribute values
+// whose keys match sensitiveKeyPatterns before writing each record.
+type redactingJSONHandler struct {
+	inner slog.Handler
+}
+
+func newRedactingJSONHandler(w io.Writer, opts *slog.HandlerOptions) *redactingJSONHandler {
+	return &redactingJSONHandler{inner: slog.NewJSONHandler(w, opts)}
+}
+
+func (h *redactingJSONHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
+	return h.inner.Enabled(ctx, lvl)
+}
+
+func (h *redactingJSONHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Inject correlation ID from context into the record when present.
+	if id := CorrelationFromContext(ctx); id != "" {
+		r.AddAttrs(slog.String("correlation_id", id))
+	}
+	// Redact sensitive attribute values.
+	var redacted []slog.Attr
+	r.Attrs(func(a slog.Attr) bool {
+		if isSensitiveKey(a.Key) {
+			redacted = append(redacted, slog.String(a.Key, "[REDACTED]"))
+		} else {
+			redacted = append(redacted, a)
+		}
+		return true
+	})
+	// Build a clean record with only the redacted attrs.
+	clean := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	clean.AddAttrs(redacted...)
+	return h.inner.Handle(ctx, clean)
+}
+
+func (h *redactingJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	safe := make([]slog.Attr, 0, len(attrs))
+	for _, a := range attrs {
+		if isSensitiveKey(a.Key) {
+			safe = append(safe, slog.String(a.Key, "[REDACTED]"))
+		} else {
+			safe = append(safe, a)
+		}
+	}
+	return &redactingJSONHandler{inner: h.inner.WithAttrs(safe)}
+}
+
+func (h *redactingJSONHandler) WithGroup(name string) slog.Handler {
+	return &redactingJSONHandler{inner: h.inner.WithGroup(name)}
 }
 
 // Trace logs at trace level (more verbose than debug)
@@ -208,8 +353,6 @@ func GetRustLogLevel() string {
 
 // GetRustLogFormat returns the format for Rust logger (json or text)
 func GetRustLogFormat() string {
-	// Check if we're using JSON format by inspecting the handler
-	// For now, we'll use an environment variable or default to text
 	if format := os.Getenv("GLASSBOX_LOG_FORMAT"); format == "json" {
 		return "json"
 	}

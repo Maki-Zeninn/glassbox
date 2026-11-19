@@ -35,7 +35,7 @@ func TestLoadSourceContext_RoundTrip(t *testing.T) {
 		"}",
 	}
 	path := writeTempSource(t, src)
-	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 3}, 2)
+	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 3, Confidence: nil}, 2)
 	require.NoError(t, err)
 	require.NotNil(t, ctx)
 	assert.Equal(t, "    require(balance >= amount);", ctx.Lines[ctx.FocusIndex])
@@ -43,7 +43,7 @@ func TestLoadSourceContext_RoundTrip(t *testing.T) {
 }
 
 func TestLoadSourceContext_FileNotFound(t *testing.T) {
-	_, err := LoadSourceContext(SourceRef{File: filepath.Join(t.TempDir(), "missing.rs"), Line: 1}, 5)
+	_, err := LoadSourceContext(SourceRef{File: filepath.Join(t.TempDir(), "missing.rs"), Line: 1, Confidence: nil}, 5)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot open")
 }
@@ -51,7 +51,7 @@ func TestLoadSourceContext_FileNotFound(t *testing.T) {
 func TestLoadSourceContext_LineClampedToEnd(t *testing.T) {
 	src := []string{"line1", "line2", "line3"}
 	path := writeTempSource(t, src)
-	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 99}, 2)
+	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 99, Confidence: nil}, 2)
 	require.NoError(t, err)
 	assert.Equal(t, "line3", ctx.Lines[ctx.FocusIndex])
 }
@@ -59,14 +59,14 @@ func TestLoadSourceContext_LineClampedToEnd(t *testing.T) {
 func TestLoadSourceContext_LineZeroClampedToStart(t *testing.T) {
 	src := []string{"line1", "line2"}
 	path := writeTempSource(t, src)
-	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 0}, 2)
+	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 0, Confidence: nil}, 2)
 	require.NoError(t, err)
 	assert.Equal(t, 0, ctx.FocusIndex)
 }
 
 func TestLoadSourceContext_EmptyFile(t *testing.T) {
 	path := writeTempSource(t, []string{})
-	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 1}, 5)
+	ctx, err := LoadSourceContext(SourceRef{File: path, Line: 1, Confidence: nil}, 5)
 	require.NoError(t, err)
 	assert.Empty(t, ctx.Lines)
 }
@@ -98,7 +98,7 @@ func TestSplitPane_Render_WithSource(t *testing.T) {
 
 	node := NewTraceNode("call-1", "contract_call")
 	node.Function = "do_transfer"
-	node.SourceRef = &SourceRef{File: path, Line: 10}
+	node.SourceRef = &SourceRef{File: path, Line: 10, Confidence: nil}
 
 	ctx, err := LoadSourceContext(*node.SourceRef, 3)
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestSplitPane_Render_ErrorNode(t *testing.T) {
 func TestSplitPane_Render_NodeWithSourceRef(t *testing.T) {
 	node := NewTraceNode("call-2", "host_fn")
 	node.Function = "require_auth"
-	node.SourceRef = &SourceRef{File: "token.rs", Line: 45, Column: 12}
+	node.SourceRef = &SourceRef{File: "token.rs", Line: 45, Column: 12, Confidence: nil}
 
 	var buf bytes.Buffer
 	pane := &SplitPane{Width: 80, TraceRows: 8, SrcRows: 4}
@@ -163,7 +163,7 @@ func TestNodeDisplayLines_AllFields(t *testing.T) {
 	node.Function = "swap"
 	node.EventData = "some data"
 	node.Error = "out of gas"
-	node.SourceRef = &SourceRef{File: "pool.rs", Line: 88}
+	node.SourceRef = &SourceRef{File: "pool.rs", Line: 88, Confidence: nil}
 
 	lines := nodeDisplayLines(node)
 	joined := strings.Join(lines, "\n")

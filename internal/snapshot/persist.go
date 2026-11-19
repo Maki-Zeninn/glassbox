@@ -17,7 +17,8 @@ import (
 
 // PersistSchemaVersion is the current on-disk format version for persisted
 // replay snapshots. Increment when the layout changes in a breaking way.
-const PersistSchemaVersion = 1
+// v2: adds metadata.ledger_format and metadata.migration_log fields.
+const PersistSchemaVersion = 2
 
 // ReplayMetadata captures the context in which a snapshot was produced.
 // It is stored alongside the ledger state so a future load can verify that
@@ -43,6 +44,15 @@ type ReplayMetadata struct {
 	// ParamFingerprint is a hash of the CLI parameters (network, tx hash, etc.)
 	// used to produce this snapshot. Used to detect stale snapshots.
 	ParamFingerprint string `json:"param_fingerprint,omitempty"`
+	// LedgerFormat describes the encoding of ledger entry values in the
+	// snapshot. Introduced in schema v2. Always "base64-xdr" for snapshots
+	// produced by current builds; present so future formats are
+	// unambiguous. Legacy v1 snapshots are migrated to "base64-xdr" on load.
+	LedgerFormat string `json:"ledger_format,omitempty"`
+	// MigrationLog records each automatic migration applied to this snapshot
+	// during a LoadPersisted call. It is append-only and bounded by the
+	// number of migration steps in migrationTable.
+	MigrationLog []MigrationLogEntry `json:"migration_log,omitempty"`
 }
 
 // PersistedSnapshot is the top-level structure written to disk.
@@ -91,6 +101,10 @@ func SavePersisted(path string, meta *ReplayMetadata, snap *Snapshot) error {
 	if meta.SavedAt.IsZero() {
 		meta.SavedAt = time.Now().UTC()
 	}
+	// v2: always record the ledger encoding for new saves.
+	if meta.LedgerFormat == "" {
+		meta.LedgerFormat = "base64-xdr"
+	}
 
 	ps := &PersistedSnapshot{
 		Metadata: meta,
@@ -138,8 +152,17 @@ func LoadPersisted(path string) (*PersistedSnapshot, error) {
 	}
 	// Delegate version checking to the canonical schema validation helper so
 	// that the error messages and upgrade guidance stay in one place (schema.go).
-	if err := ValidateSchemaVersion(ps.Metadata.SchemaVersion, path); err != nil {
-		return nil, err
+	// For versions that NeedsUpgrade (v1 → v2), we migrate automatically below
+	// instead of returning an error; for Unsupported versions we still error.
+	versionResult := classifySchemaVersion(ps.Metadata.SchemaVersion)
+	if versionResult.Unsupported {
+		return nil, &SchemaError{Result: versionResult, Path: path}
+	}
+	// Auto-migrate supported older versions.
+	if versionResult.NeedsUpgrade {
+		if _, err := MigrateSnapshot(&ps); err != nil {
+			return nil, fmt.Errorf("snapshot file %s: migration failed: %w", path, err)
+		}
 	}
 	if ps.Metadata.TxHash == "" {
 		return nil, fmt.Errorf(
@@ -153,6 +176,15 @@ func LoadPersisted(path string) (*PersistedSnapshot, error) {
 			"snapshot file %s is missing the network in metadata — the file may be truncated or corrupted; "+
 				"re-run the debug command to regenerate the snapshot",
 			path,
+		)
+	}
+	validNetworks := map[string]bool{"testnet": true, "mainnet": true, "futurenet": true}
+	if !validNetworks[ps.Metadata.Network] {
+		return nil, fmt.Errorf(
+			"snapshot file %s contains unknown network %q in metadata — "+
+				"must be one of: testnet, mainnet, futurenet; "+
+				"re-run the debug command with --network to regenerate the snapshot",
+			path, ps.Metadata.Network,
 		)
 	}
 	if ps.Snapshot == nil {

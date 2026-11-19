@@ -4,6 +4,28 @@
 import * as crypto from 'crypto';
 import { URL } from 'url';
 
+/**
+ * Signed URI payload carried in the `signed-payload` query parameter.
+ * The payload is base64url-encoded JSON; its HMAC-SHA256 signature is in
+ * the `signature` query parameter.
+ *
+ * Fields:
+ *   txHash    - must match the URI path
+ *   network   - must match the `network` query parameter
+ *   exp       - Unix timestamp (seconds) after which this link is invalid
+ *   iss       - Issuer identifier (e.g. dashboard hostname)
+ *   scope     - Allowed operations (e.g. ["debug"])
+ *   operation - Optional operation index, mirrors the URI param
+ */
+export interface SignedURIPayload {
+    txHash: string;
+    network: 'testnet' | 'mainnet';
+    exp: number;
+    iss: string;
+    scope: string[];
+    operation?: number;
+}
+
 export interface ParsedURI {
     transactionHash: string;
     network: 'testnet' | 'mainnet';
@@ -14,6 +36,10 @@ export interface ParsedURI {
     mockLedgerManifest?: string;
     mockLedgerEntries?: string[];
     protocolVersion?: number;
+    /** Decoded signed payload, present when `signed-payload` query param exists. */
+    signedPayload?: SignedURIPayload;
+    /** Raw base64url-encoded payload string, needed to re-verify the signature. */
+    signedPayloadEncoded?: string;
 }
 
 /**
@@ -132,6 +158,15 @@ export class URIParser {
                 validatedEntries.push(trimmed);
             }
 
+            // Signed payload (optional, tamper-evident extension)
+            let signedPayload: SignedURIPayload | undefined;
+            let signedPayloadEncoded: string | undefined;
+            const rawSignedPayload = params.get('signed-payload');
+            if (rawSignedPayload) {
+                signedPayloadEncoded = rawSignedPayload;
+                signedPayload = this.parseSignedPayload(rawSignedPayload);
+            }
+
             return {
                 transactionHash,
                 network: network as 'testnet' | 'mainnet',
@@ -142,6 +177,8 @@ export class URIParser {
                 protocolVersion,
                 mockLedgerManifest: mockManifest,
                 mockLedgerEntries: validatedEntries.length > 0 ? validatedEntries : undefined,
+                signedPayload,
+                signedPayloadEncoded,
             };
         } catch (error) {
             if (error instanceof Error) {
@@ -191,6 +228,98 @@ export class URIParser {
             .createHmac('sha256', secret)
             .update(data)
             .digest('hex');
+    }
+
+    /**
+     * Decode and parse a base64url-encoded SignedURIPayload.
+     * Throws if the encoding or JSON structure is invalid.
+     */
+    parseSignedPayload(encoded: string): SignedURIPayload {
+        let json: string;
+        try {
+            const padded = encoded + '='.repeat((4 - encoded.length % 4) % 4);
+            json = Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+        } catch {
+            throw new Error('Invalid signed-payload: base64url decoding failed');
+        }
+
+        let payload: unknown;
+        try {
+            payload = JSON.parse(json);
+        } catch {
+            throw new Error('Invalid signed-payload: JSON parsing failed');
+        }
+
+        if (typeof payload !== 'object' || payload === null) {
+            throw new Error('Invalid signed-payload: must be a JSON object');
+        }
+        const p = payload as Record<string, unknown>;
+
+        if (typeof p.txHash !== 'string') throw new Error('Invalid signed-payload: missing txHash');
+        if (p.network !== 'testnet' && p.network !== 'mainnet') {
+            throw new Error('Invalid signed-payload: network must be testnet or mainnet');
+        }
+        if (typeof p.exp !== 'number' || !Number.isFinite(p.exp)) {
+            throw new Error('Invalid signed-payload: exp must be a finite number');
+        }
+        if (typeof p.iss !== 'string' || p.iss.length === 0) {
+            throw new Error('Invalid signed-payload: iss must be a non-empty string');
+        }
+        if (!Array.isArray(p.scope) || !p.scope.every((s: unknown) => typeof s === 'string')) {
+            throw new Error('Invalid signed-payload: scope must be an array of strings');
+        }
+        if (p.operation !== undefined && (typeof p.operation !== 'number' || p.operation < 0)) {
+            throw new Error('Invalid signed-payload: operation must be a non-negative number');
+        }
+
+        return {
+            txHash: p.txHash as string,
+            network: p.network as 'testnet' | 'mainnet',
+            exp: p.exp as number,
+            iss: p.iss as string,
+            scope: p.scope as string[],
+            operation: p.operation as number | undefined,
+        };
+    }
+
+    /**
+     * Verify the HMAC-SHA256 signature over the raw base64url-encoded payload.
+     * The signature must be a lowercase hex string.
+     */
+    validateSignedPayloadSignature(encodedPayload: string, signature: string, secret: string): boolean {
+        const expected = crypto
+            .createHmac('sha256', secret)
+            .update(encodedPayload)
+            .digest('hex');
+        try {
+            return crypto.timingSafeEqual(
+                Buffer.from(signature, 'hex'),
+                Buffer.from(expected, 'hex'),
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Build a signed URI payload, base64url-encode it, and return both the
+     * encoded string and the HMAC-SHA256 signature.
+     */
+    generateSignedPayload(
+        params: SignedURIPayload,
+        secret: string,
+    ): { encoded: string; signature: string } {
+        const json = JSON.stringify(params);
+        const encoded = Buffer.from(json)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=/g, '');
+        const signature = crypto
+            .createHmac('sha256', secret)
+            .update(encoded)
+            .digest('hex');
+        return { encoded, signature };
     }
 
     /**

@@ -1,0 +1,921 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# fuzz.yml
+#
+# Fuzz testing workflow: runs fuzz targets with bounded execution and memory limits.
+# This is a lightweight corpus job that runs on every push and pull request to catch
+# regressions early. For more intensive fuzzing, run locally with longer durations.
+
+name: Fuzz Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run weekly on Sundays at 00:00 UTC for deeper coverage
+    - cron: '0 0 * * 0'
+
+# Cancel in-flight runs for the same branch/PR when a new commit is pushed.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Fuzzing time bounds (seconds)
+  FUZZ_TIME_PR: 30      # Lightweight run for PRs
+  FUZZ_TIME_PUSH: 60    # Medium run for pushes
+  FUZZ_TIME_SCHEDULE: 300 # Deep run for scheduled jobs
+  
+  # Memory limit for fuzz targets (MB)
+  FUZZ_MEMORY_LIMIT: 512
+  
+  # Timeout for the entire fuzz job (seconds)
+  FUZZ_JOB_TIMEOUT: 600
+  
+  # Artifact retention (days)
+  ARTIFACT_RETENTION_DAYS: "7"
+  
+  # Disable telemetry
+  GLASSBOX_TELEMETRY: "false"
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # XDR decoder fuzzing
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-xdr:
+    name: Fuzz XDR decoder
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run XDR fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-xdr
+          go test -fuzz=FuzzDecodeEnvelope \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            -memprofile=ci-artifacts/fuzz-xdr/mem.prof \
+            ./internal/simulator/ 2>&1 | tee ci-artifacts/fuzz-xdr/output.log || true
+          
+          # Run additional XDR fuzz targets
+          go test -fuzz=FuzzXDRSafeUnmarshal \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/simulator/ 2>&1 | tee -a ci-artifacts/fuzz-xdr/output.log || true
+          
+          go test -fuzz=FuzzDecodeDiagnosticEvent \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/simulator/ 2>&1 | tee -a ci-artifacts/fuzz-xdr/output.log || true
+
+          go test -fuzz=FuzzFootprintDecode \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/simulator/ 2>&1 | tee -a ci-artifacts/fuzz-xdr/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-xdr/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in XDR fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-xdr-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-xdr/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Decoder fuzzing (JSON, events)
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-decoder:
+    name: Fuzz decoder
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run decoder fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-decoder
+          go test -fuzz=FuzzDecodeEvents \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/decoder/ 2>&1 | tee ci-artifacts/fuzz-decoder/output.log || true
+          
+          go test -fuzz=FuzzDecodeDiagnosticEvents \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/decoder/ 2>&1 | tee -a ci-artifacts/fuzz-decoder/output.log || true
+          
+          go test -fuzz=FuzzUnmarshalJSON \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/decoder/ 2>&1 | tee -a ci-artifacts/fuzz-decoder/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-decoder/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in decoder fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-decoder-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-decoder/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Trace decoder fuzzing
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-trace:
+    name: Fuzz trace decoder
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run trace fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-trace
+          go test -fuzz=FuzzParseContractEvent \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/trace/ 2>&1 | tee ci-artifacts/fuzz-trace/output.log || true
+          
+          go test -fuzz=FuzzParseEventEnvelope \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/trace/ 2>&1 | tee -a ci-artifacts/fuzz-trace/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-trace/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in trace fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-trace-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-trace/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Session parser fuzzing
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-session:
+    name: Fuzz session parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run session fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-session
+          go test -fuzz=FuzzValidateArchivePath \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/session/ 2>&1 | tee ci-artifacts/fuzz-session/output.log || true
+          
+          go test -fuzz=FuzzValidateIntegrity \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/session/ 2>&1 | tee -a ci-artifacts/fuzz-session/output.log || true
+          
+          go test -fuzz=FuzzParseRedactionProfile \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/session/ 2>&1 | tee -a ci-artifacts/fuzz-session/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-session/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in session fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-session-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-session/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # WASM parser fuzzing
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-wasm:
+    name: Fuzz WASM parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run WASM fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-wasm
+          go test -fuzz=FuzzValidateWasmMagic \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/abi/ 2>&1 | tee ci-artifacts/fuzz-wasm/output.log || true
+          
+          go test -fuzz=FuzzExtractCustomSection \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/abi/ 2>&1 | tee -a ci-artifacts/fuzz-wasm/output.log || true
+          
+          go test -fuzz=FuzzAnalyzeWasmSize \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/abi/ 2>&1 | tee -a ci-artifacts/fuzz-wasm/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-wasm/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in WASM fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-wasm-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-wasm/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Certificate parser fuzzing
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-certificate:
+    name: Fuzz certificate parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run certificate fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-certificate
+          go test -fuzz=FuzzParseCertificate \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/cmd/ 2>&1 | tee ci-artifacts/fuzz-certificate/output.log || true
+          
+          go test -fuzz=FuzzParseTrustPolicyConfig \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/cmd/ 2>&1 | tee -a ci-artifacts/fuzz-certificate/output.log || true
+          
+          go test -fuzz=FuzzParsePEMCertificates \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/cmd/ 2>&1 | tee -a ci-artifacts/fuzz-certificate/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-certificate/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in certificate fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-certificate-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-certificate/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Demangle fuzzing
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-demangle:
+    name: Fuzz demangle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run demangle fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-demangle
+          go test -fuzz=FuzzSafeDemangleSymbol \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzSafeDemangleLegacy \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzSafeDemangleV0 \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzSafeParseLengthPrefixed \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzSafeParseV0Path \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzCreateFallbackLabel \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzSanitizeForDisplay \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzEscapeForHTML \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+          
+          go test -fuzz=FuzzEscapeForJSON \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/demangle/ 2>&1 | tee -a ci-artifacts/fuzz-demangle/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-demangle/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in demangle fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-demangle-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-demangle/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Deep link URI parser fuzzing (internal/protocolreg)
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-deeplink:
+    name: Fuzz deep link URI parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run deep link URI fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-deeplink
+          go test -fuzz=FuzzParseDebugURI \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/protocolreg/ 2>&1 | tee ci-artifacts/fuzz-deeplink/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-deeplink/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in deep link URI fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-deeplink-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-deeplink/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # IPC message parser fuzzing (internal/ipc)
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-ipc:
+    name: Fuzz IPC message parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run IPC fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-ipc
+          go test -fuzz=FuzzUnmarshalSimulationRequest \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/ipc/ 2>&1 | tee ci-artifacts/fuzz-ipc/output.log || true
+
+          go test -fuzz=FuzzUnmarshalSimulationResponse \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/ipc/ 2>&1 | tee -a ci-artifacts/fuzz-ipc/output.log || true
+
+          go test -fuzz=FuzzUnmarshalHandshakeRequest \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/ipc/ 2>&1 | tee -a ci-artifacts/fuzz-ipc/output.log || true
+
+          go test -fuzz=FuzzIPCErrorClassification \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/ipc/ 2>&1 | tee -a ci-artifacts/fuzz-ipc/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-ipc/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in IPC fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-ipc-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-ipc/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Manifest parser fuzzing (internal/manifest)
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-manifest:
+    name: Fuzz manifest parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run manifest fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-manifest
+          go test -fuzz=FuzzVerifyManifest \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/manifest/ 2>&1 | tee ci-artifacts/fuzz-manifest/output.log || true
+
+          go test -fuzz=FuzzCanonicalJSON \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/manifest/ 2>&1 | tee -a ci-artifacts/fuzz-manifest/output.log || true
+
+          go test -fuzz=FuzzManifestHash \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/manifest/ 2>&1 | tee -a ci-artifacts/fuzz-manifest/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-manifest/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in manifest fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-manifest-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-manifest/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # DWARF parser fuzzing (internal/dwarf)
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-dwarf:
+    name: Fuzz DWARF parser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Determine fuzz time
+        id: fuzz_time
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "time=${FUZZ_TIME_PR}s" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "time=${FUZZ_TIME_SCHEDULE}s" >> $GITHUB_OUTPUT
+          else
+            echo "time=${FUZZ_TIME_PUSH}s" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run DWARF fuzz tests
+        id: run_fuzz
+        run: |
+          mkdir -p ci-artifacts/fuzz-dwarf
+          go test -fuzz=FuzzNewParser \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/dwarf/ 2>&1 | tee ci-artifacts/fuzz-dwarf/output.log || true
+
+          go test -fuzz=FuzzGetSourceLocation \
+            -fuzztime=${{ steps.fuzz_time.outputs.time }} \
+            -timeout=${FUZZ_JOB_TIMEOUT}s \
+            ./internal/dwarf/ 2>&1 | tee -a ci-artifacts/fuzz-dwarf/output.log || true
+        continue-on-error: true
+
+      - name: Check for crashes
+        id: check_crashes
+        run: |
+          if grep -q "crash" ci-artifacts/fuzz-dwarf/output.log; then
+            echo "crash_found=true" >> $GITHUB_OUTPUT
+            echo "Crash detected in DWARF fuzzing"
+            exit 1
+          else
+            echo "crash_found=false" >> $GITHUB_OUTPUT
+            echo "No crashes detected"
+          fi
+        continue-on-error: true
+
+      - name: Upload fuzz artifacts
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-dwarf-crash-${{ github.run_id }}
+          path: ci-artifacts/fuzz-dwarf/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
+      - name: Fail if crash found
+        if: steps.check_crashes.outputs.crash_found == 'true'
+        run: exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Summary job: all fuzz targets must pass
+  # ───────────────────────────────────────────────────────────────────────────
+  fuzz-gate:
+    name: Fuzz gate (all targets passed)
+    runs-on: ubuntu-latest
+    needs: [ fuzz-xdr, fuzz-decoder, fuzz-trace, fuzz-session, fuzz-wasm, fuzz-certificate, fuzz-demangle, fuzz-deeplink, fuzz-ipc, fuzz-manifest, fuzz-dwarf ]
+    if: always()
+
+    steps:
+      - name: Check all fuzz jobs passed
+        run: |
+          results=(
+            "${{ needs.fuzz-xdr.result }}"
+            "${{ needs.fuzz-decoder.result }}"
+            "${{ needs.fuzz-trace.result }}"
+            "${{ needs.fuzz-session.result }}"
+            "${{ needs.fuzz-wasm.result }}"
+            "${{ needs.fuzz-certificate.result }}"
+            "${{ needs.fuzz-demangle.result }}"
+            "${{ needs.fuzz-deeplink.result }}"
+            "${{ needs.fuzz-ipc.result }}"
+            "${{ needs.fuzz-manifest.result }}"
+            "${{ needs.fuzz-dwarf.result }}"
+          )
+          failed=0
+          for r in "${results[@]}"; do
+            if [ "$r" != "success" ] && [ "$r" != "skipped" ]; then
+              echo "[FAIL] fuzz job result: $r"
+              failed=1
+            fi
+          done
+          if [ "$failed" -eq 1 ]; then
+            echo "One or more fuzz jobs failed. Check the uploaded crash artifacts."
+            echo "See testdata/fuzz/TRIAGE.md for triage instructions."
+            exit 1
+          fi
+          echo "[OK] All fuzz jobs passed."

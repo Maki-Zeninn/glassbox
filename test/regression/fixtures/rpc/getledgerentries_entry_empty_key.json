@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "latestLedger": 500,
+    "entries": [
+      {
+        "key": "",
+        "xdr": "AAAA",
+        "lastModifiedLedger": 400
+      }
+    ]
+  },
+  "id": 1
+}

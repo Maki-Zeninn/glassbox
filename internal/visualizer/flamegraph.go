@@ -4,6 +4,7 @@
 package visualizer
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -582,13 +583,29 @@ func (f ExportFormat) GetFileExtension() string {
 }
 
 // ExportFlamegraph generates the appropriate output format for a flamegraph
-func ExportFlamegraph(svg string, format ExportFormat) string {
+// and validates the result before returning. Returns an error if the
+// generated output fails structural validation.
+func ExportFlamegraph(svg string, format ExportFormat) (string, error) {
+	var result string
+
 	switch format {
 	case FormatHTML:
-		return GenerateInteractiveHTML(svg)
+		result = GenerateInteractiveHTML(svg)
 	case FormatSVG:
-		return InjectDarkMode(svg)
+		result = InjectDarkMode(svg)
 	default:
-		return InjectDarkMode(svg)
+		result = InjectDarkMode(svg)
+		format = FormatSVG
 	}
+
+	validation := ValidateFlamegraph(result, format)
+	if !validation.Valid {
+		errs := make([]string, len(validation.Errors))
+		for i, e := range validation.Errors {
+			errs[i] = e.Error()
+		}
+		return "", fmt.Errorf("flamegraph export validation failed: %s", strings.Join(errs, "; "))
+	}
+
+	return result, nil
 }

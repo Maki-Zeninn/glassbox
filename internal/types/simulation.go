@@ -48,6 +48,7 @@ type SimulationMetadata struct {
 	SnapshotStatus  SnapshotStatus `json:"snapshot_status"`
 	TotalSteps      int            `json:"total_steps"`
 	SnapshotCount   int            `json:"snapshot_count"`
+	DeterministicSeed string       `json:"deterministic_seed,omitempty"` // Hex-encoded seed if deterministic mode was used
 }
 
 // DetermineSnapshotStatus evaluates the current simulation state and returns the

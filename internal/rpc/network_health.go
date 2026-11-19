@@ -91,6 +91,10 @@ func NewHealthCollector() *HealthCollector {
 
 // RecordRequest records telemetry for a single RPC request.
 func (hc *HealthCollector) RecordRequest(url string, latency time.Duration, success bool) {
+	if url == "" {
+		return
+	}
+
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 
@@ -212,13 +216,19 @@ func (hc *HealthCollector) GetHealthiestURL(urls []string) string {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()
 
+	if len(urls) == 0 {
+		return ""
+	}
+
 	var bestURL string
 	var bestScore float64 = -1
 
 	for _, url := range urls {
+		if url == "" {
+			continue
+		}
 		stats, exists := hc.stats[url]
 		if !exists {
-			// Unknown node gets neutral score; still consider it
 			if bestScore < 0.5 {
 				bestScore = 0.5
 				bestURL = url
@@ -239,6 +249,10 @@ func (hc *HealthCollector) RankURLsByHealth(urls []string) []string {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()
 
+	if len(urls) == 0 {
+		return nil
+	}
+
 	type urlScore struct {
 		url   string
 		score float64
@@ -246,6 +260,9 @@ func (hc *HealthCollector) RankURLsByHealth(urls []string) []string {
 
 	scores := make([]urlScore, 0, len(urls))
 	for _, url := range urls {
+		if url == "" {
+			continue
+		}
 		stats, exists := hc.stats[url]
 		score := 0.5 // neutral for unknown
 		if exists {

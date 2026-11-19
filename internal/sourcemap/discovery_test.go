@@ -157,6 +157,16 @@ func TestCheckHashMismatch_NonExistentFile_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to read WASM file")
 }
 
+func TestCheckHashMismatch_InvalidMagic_ReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	wasmPath := filepath.Join(dir, "contract.wasm")
+	require.NoError(t, os.WriteFile(wasmPath, []byte("not_wasm_data_here"), 0644))
+
+	err := CheckHashMismatch(wasmPath, "abcdef")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid WASM binary")
+}
+
 func TestCheckHashMismatch_MismatchedHash_ReturnsHashMismatchError(t *testing.T) {
 	dir := t.TempDir()
 	wasmPath := filepath.Join(dir, "contract.wasm")

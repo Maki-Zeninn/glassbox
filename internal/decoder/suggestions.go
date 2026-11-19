@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	confidenceHigh   = "high"
-	confidenceMedium = "medium"
-	confidenceLow    = "low"
+	ConfidenceHigh   = "high"
+	ConfidenceMedium = "medium"
+	ConfidenceLow    = "low"
 )
 
 // Suggestion represents a potential fix for a Soroban error
@@ -74,7 +74,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "uninitialized_contract",
 			Description: "Potential Fix: Ensure you have called initialize() on this contract before invoking other functions.",
-			Confidence:  confidenceHigh,
+			Confidence:  ConfidenceHigh,
 		},
 	})
 
@@ -96,7 +96,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "missing_authorization",
 			Description: "Potential Fix: Verify that all required signatures are present and the invoker has proper authorization.",
-			Confidence:  confidenceHigh,
+			Confidence:  ConfidenceHigh,
 		},
 	})
 
@@ -118,7 +118,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "insufficient_balance",
 			Description: "Potential Fix: Ensure the account has sufficient balance to cover the transaction and maintain minimum reserves.",
-			Confidence:  confidenceHigh,
+			Confidence:  ConfidenceHigh,
 		},
 	})
 
@@ -140,7 +140,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "invalid_parameters",
 			Description: "Potential Fix: Check that all function parameters match the expected types and constraints.",
-			Confidence:  confidenceMedium,
+			Confidence:  ConfidenceMedium,
 		},
 	})
 
@@ -156,7 +156,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "contract_not_found",
 			Description: "Potential Fix: Verify the contract ID is correct and the contract has been deployed to the network.",
-			Confidence:  confidenceHigh,
+			Confidence:  ConfidenceHigh,
 		},
 	})
 
@@ -178,7 +178,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "resource_limit_exceeded",
 			Description: "Potential Fix: Optimize your contract code to reduce CPU/memory usage, or increase resource limits in the transaction.",
-			Confidence:  confidenceMedium,
+			Confidence:  ConfidenceMedium,
 		},
 	})
 
@@ -200,7 +200,7 @@ func (e *SuggestionEngine) loadDefaultRules() {
 		Suggestion: Suggestion{
 			Rule:        "reentrancy_detected",
 			Description: "Potential Fix: Implement reentrancy guards or use the checks-effects-interactions pattern to prevent recursive calls.",
-			Confidence:  confidenceMedium,
+			Confidence:  ConfidenceMedium,
 		},
 	})
 }
@@ -300,11 +300,11 @@ func confidenceFromMatch(match ruleMatch) string {
 	score := match.specificityScore()
 	switch {
 	case score >= 4:
-		return confidenceHigh
+		return ConfidenceHigh
 	case score >= 2:
-		return confidenceMedium
+		return ConfidenceMedium
 	default:
-		return confidenceLow
+		return ConfidenceLow
 	}
 }
 
@@ -351,11 +351,11 @@ func FormatSuggestions(suggestions []Suggestion) string {
 	for i, suggestion := range suggestions {
 		confidenceIcon := "⚪"
 		switch suggestion.Confidence {
-		case confidenceHigh:
+		case ConfidenceHigh:
 			confidenceIcon = "🟢"
-		case confidenceMedium:
+		case ConfidenceMedium:
 			confidenceIcon = "🟡"
-		case confidenceLow:
+		case ConfidenceLow:
 			confidenceIcon = "🔴"
 		}
 

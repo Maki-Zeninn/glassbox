@@ -18,6 +18,11 @@ Each ADR follows the standard format:
 |-----|-------|--------|------|
 | [001](001-snapshot-caching-strategy.md) | Snapshot Caching Strategy using Bincode and SHA256 | Accepted | 2026-02-26 |
 | [002](002-hsm-integration.md) | HSM Integration for Cryptographic Operations | Accepted | 2026-02-26 |
+| [003](003-trust-boundaries.md) | Trust Boundaries and Component Trust Levels | Accepted | 2026-08-31 |
+| [004](004-data-classification.md) | Data Classification and Cross-Boundary Data Flows | Accepted | 2026-08-31 |
+| [005](005-canonicalization-ownership.md) | Canonicalization Ownership | Accepted | 2026-08-31 |
+| [006](006-provider-isolation.md) | Provider Isolation | Accepted | 2026-08-31 |
+| [007](007-offline-guarantees.md) | Offline Guarantees | Accepted | 2026-08-31 |
 
 ## ADR Process
 

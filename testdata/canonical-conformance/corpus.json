@@ -1,0 +1,149 @@
+{
+  "version": "1.0.0",
+  "description": "Canonical JSON conformance corpus for Glassbox. Both Go and TypeScript must produce byte-identical canonical JSON and SHA-256 hashes for every case in 'cases'. Cases in 'invalid' must be rejected consistently.",
+  "cases": [
+    {
+      "id": "basic-key-ordering",
+      "description": "Top-level keys must be sorted lexicographically",
+      "input": {"z": 1, "a": 2, "m": 3},
+      "canonical": "{\"a\":2,\"m\":3,\"z\":1}",
+      "sha256": "ebba85cfdc0a724b6cc327ecc545faeb38b9fe02eca603b430eb872f5cf75370"
+    },
+    {
+      "id": "nested-key-ordering",
+      "description": "Nested object keys must also be sorted at every level",
+      "input": {
+        "outer_z": {"inner_z": "value1", "inner_a": "value2"},
+        "outer_a": "simple"
+      },
+      "canonical": "{\"outer_a\":\"simple\",\"outer_z\":{\"inner_a\":\"value2\",\"inner_z\":\"value1\"}}",
+      "sha256": "d7d7e927701f7d1b734d6cf92740168de79c1f6bf610a8295f6f3d16794c603f"
+    },
+    {
+      "id": "no-whitespace",
+      "description": "Canonical form has no whitespace between tokens",
+      "input": {"key": "value", "num": 42},
+      "canonical": "{\"key\":\"value\",\"num\":42}",
+      "sha256": "d81188885389ad7836eebf580ec0a1c85d4b987810edfa41df659ab13c2bc50b"
+    },
+    {
+      "id": "array-insertion-order",
+      "description": "Arrays preserve insertion order (not sorted)",
+      "input": {"events": ["C", "A", "B"], "name": "test"},
+      "canonical": "{\"events\":[\"C\",\"A\",\"B\"],\"name\":\"test\"}",
+      "sha256": "4586a559418bf85f2adb87d8ce8897a6fe776972830597d7a404903e09ef829f"
+    },
+    {
+      "id": "null-value",
+      "description": "null values are serialised as JSON null",
+      "input": {"a": null, "b": "present"},
+      "canonical": "{\"a\":null,\"b\":\"present\"}",
+      "sha256": "57368b4ca15a8b11a83dfa139858fdf9ce6fd8a6e97b01d46a26a0d0195c5cdb"
+    },
+    {
+      "id": "boolean-values",
+      "description": "Booleans serialise as true / false",
+      "input": {"flag_a": true, "flag_b": false},
+      "canonical": "{\"flag_a\":true,\"flag_b\":false}",
+      "sha256": "0d1690f739fed8aff6366ae6c126b4587ea87c0c1d015769ad7159d0160f9c7f"
+    },
+    {
+      "id": "integer-numbers",
+      "description": "Integer numbers have no trailing .0",
+      "input": {"count": 42, "zero": 0, "negative": -7},
+      "canonical": "{\"count\":42,\"negative\":-7,\"zero\":0}",
+      "sha256": "e01be1d76a0b904972403added802a1d629fbb1baf676d82211814ebd76f61b8"
+    },
+    {
+      "id": "float-numbers",
+      "description": "Floating-point numbers serialise with standard IEEE 754 representation",
+      "input": {"pi": 3.14159, "fraction": 0.5},
+      "canonical": "{\"fraction\":0.5,\"pi\":3.14159}",
+      "sha256": "82f7c524f229f0713b52a71ae64ba09f1f928cb56465c831f065456c94715a98"
+    },
+    {
+      "id": "unicode-strings",
+      "description": "Unicode strings (emoji, CJK, Arabic) are preserved as UTF-8 without extra escaping",
+      "input": {"emoji": "🔬", "cjk": "日本語", "arabic": "مرحبا"},
+      "canonical": "{\"arabic\":\"مرحبا\",\"cjk\":\"日本語\",\"emoji\":\"🔬\"}",
+      "sha256": "13b2a1a9933d42bfb2f6a87a8402353b4749d3099cb37dded5c7ab4649496a46",
+      "notes": "Both Go and TypeScript preserve non-ASCII unicode as raw UTF-8. No \\uXXXX escaping is applied beyond what JSON mandates for control characters."
+    },
+    {
+      "id": "empty-object",
+      "description": "Empty object serialises to {}",
+      "input": {},
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "id": "empty-array",
+      "description": "Empty array serialises to []",
+      "input": {"items": []},
+      "canonical": "{\"items\":[]}",
+      "sha256": "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1"
+    },
+    {
+      "id": "deeply-nested",
+      "description": "Keys are sorted at all nesting levels",
+      "input": {
+        "z": {"y": {"x": 1, "a": 2}, "b": 3},
+        "a": {"z": 9, "a": 0}
+      },
+      "canonical": "{\"a\":{\"a\":0,\"z\":9},\"z\":{\"b\":3,\"y\":{\"a\":2,\"x\":1}}}",
+      "sha256": "996cc3fee845cb7b84037f1a99532ceb702322350da9a0cdbcc5076eddd55177"
+    },
+    {
+      "id": "audit-payload-typical",
+      "description": "A typical audit payload as produced by AuditLogger",
+      "input": {
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "state": {"y": 9, "x": 8},
+        "input": {"b": 2, "a": 1},
+        "events": ["E1", "E2"]
+      },
+      "canonical": "{\"events\":[\"E1\",\"E2\"],\"input\":{\"a\":1,\"b\":2},\"state\":{\"x\":8,\"y\":9},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}",
+      "sha256": "d95ddcc344dbee53db8e39a40dee01063e27d9fcd8f20b265f7c0790274067c2"
+    },
+    {
+      "id": "array-of-objects",
+      "description": "Arrays of objects: element order preserved, keys within each object sorted",
+      "input": {
+        "items": [{"z": 1, "a": 2}, {"m": 3, "b": 4}]
+      },
+      "canonical": "{\"items\":[{\"a\":2,\"z\":1},{\"b\":4,\"m\":3}]}",
+      "sha256": "7373339a86d49a0e7ac0e8290809e858771649552b1cce31d0d4ac053b9c403d"
+    },
+    {
+      "id": "mixed-types-in-array",
+      "description": "Arrays may contain mixed types",
+      "input": {"data": [1, "two", true, null, {"k": "v"}]},
+      "canonical": "{\"data\":[1,\"two\",true,null,{\"k\":\"v\"}]}",
+      "sha256": "e58924a4184bb8c344f9709ca476bcdd91674f1f2b267d008e15f2a9335fc6d2"
+    },
+    {
+      "id": "string-escaping-basics",
+      "description": "Strings with backslash, quote, and control characters are escaped per JSON spec",
+      "input": {"msg": "line1\nline2\ttab\"quote\\backslash"},
+      "canonical": "{\"msg\":\"line1\\nline2\\ttab\\\"quote\\\\backslash\"}",
+      "sha256": "a95b17f4a9ee3868ed06d22a0f229f1eb74f7db4dc0c9d8e43083bc0fd715975"
+    }
+  ],
+  "invalid": [
+    {
+      "id": "nan-value",
+      "description": "NaN is not a valid JSON value and must be rejected before serialisation",
+      "notes": "Both Go and TypeScript must return an error/throw when NaN is encountered"
+    },
+    {
+      "id": "infinity-value",
+      "description": "Infinity is not a valid JSON value and must be rejected before serialisation",
+      "notes": "Both Go and TypeScript must return an error/throw when Infinity is encountered"
+    },
+    {
+      "id": "circular-reference",
+      "description": "Circular object references must be detected and rejected",
+      "notes": "Only applicable at the application layer; JSON.parse can never produce one"
+    }
+  ]
+}

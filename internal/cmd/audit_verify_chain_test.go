@@ -18,6 +18,31 @@ import (
 
 const validChainHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 64 hex
 
+// testCertPEM and testIntermediatePEM are throwaway self-signed Ed25519
+// certificates (TEST USE ONLY, no corresponding private key retained) used
+// to exercise validateProvenance's PEM chain parsing.
+const testCertPEM = `-----BEGIN CERTIFICATE-----
+MIIBTzCCAQGgAwIBAgIUci48itMU8AupSBcnPTco+biRhEUwBQYDK2VwMB0xGzAZ
+BgNVBAMMEmdsYXNzYm94LXRlc3QtbGVhZjAeFw0yNjA3MjYwMjI3MDdaFw0zNjA3
+MjMwMjI3MDdaMB0xGzAZBgNVBAMMEmdsYXNzYm94LXRlc3QtbGVhZjAqMAUGAytl
+cAMhAGURHrP+VkxpADyA6L5qw/MylsgWqZKQfNkzaO3/5UBgo1MwUTAdBgNVHQ4E
+FgQUOwUViEqdIyLmQ+IWpLvfY6Xk4BgwHwYDVR0jBBgwFoAUOwUViEqdIyLmQ+IW
+pLvfY6Xk4BgwDwYDVR0TAQH/BAUwAwEB/zAFBgMrZXADQQDrakkxeMgfCwdjXlTh
+wlwPu/dB88SWNOLK93cbvoGBYpHqWZT+SBGCwe6msWSKlcEEWFpFRh+lujragBGG
+jnYH
+-----END CERTIFICATE-----`
+
+const testIntermediatePEM = `-----BEGIN CERTIFICATE-----
+MIIBXzCCARGgAwIBAgIUXtWBYYQ3FK9y8wom5Juq8ZCasv8wBQYDK2VwMCUxIzAh
+BgNVBAMMGmdsYXNzYm94LXRlc3QtaW50ZXJtZWRpYXRlMB4XDTI2MDcyNjAyMjcw
+N1oXDTM2MDcyMzAyMjcwN1owJTEjMCEGA1UEAwwaZ2xhc3Nib3gtdGVzdC1pbnRl
+cm1lZGlhdGUwKjAFBgMrZXADIQCQnVQUgKpNq3XvxlvPiFHufLeycz9CE+GzDDhY
+58xRQqNTMFEwHQYDVR0OBBYEFOg2YVLaoAd+0QoBDOlQZrtP4+PNMB8GA1UdIwQY
+MBaAFOg2YVLaoAd+0QoBDOlQZrtP4+PNMA8GA1UdEwEB/wQFMAMBAf8wBQYDK2Vw
+A0EAxkLGLhwlri5b6AKWnwOzYj4LUrmeJZgwwH23VxzekFC46AVFaN6tnU4w/wIh
+dkcfwhzZ9KoLXW/5Xc/qmHeBDA==
+-----END CERTIFICATE-----`
+
 // writePrevHashIntoLog loads the signed log at path, sets its provenance
 // previous_signature_hash, and rewrites it. The Ed25519 signature is computed
 // over the payload hash, so injecting provenance does not invalidate it.
@@ -37,13 +62,7 @@ func writePrevHashIntoLog(t *testing.T, path, prevHash string) {
 	require.NoError(t, os.WriteFile(path, out, 0600))
 }
 
-func resetAuditVerifyFlags() {
-	auditVerifyFile = ""
-	auditVerifyPublicKey = ""
-	auditVerifySchema = ""
-	auditVerifyJSON = false
-	auditVerifyPreviousHash = ""
-}
+
 
 func TestValidateAuditVerifyInputs(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(nil)

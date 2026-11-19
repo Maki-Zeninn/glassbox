@@ -20,6 +20,12 @@ type DiagnosticEvent struct {
 	CPU                      *uint64  `json:"cpu,omitempty"`
 	Memory                   *uint64  `json:"mem,omitempty"`
 	FuncName                 *string  `json:"func_name,omitempty"`
+	// SequenceID is a monotonically increasing identifier assigned at collection time
+	// to preserve event order across serialization, filtering, and merging operations.
+	SequenceID uint64 `json:"sequence_id,omitempty"`
+	// ParentSequenceID tracks the parent event for nested call relationships.
+	// Zero indicates no parent (top-level event).
+	ParentSequenceID uint64 `json:"parent_sequence_id,omitempty"`
 }
 
 // ParseData decodes the base64-encoded XDR Data into an xdr.ScVal

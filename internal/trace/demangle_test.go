@@ -4,6 +4,7 @@
 package trace_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dotandev/glassbox/internal/demangle"
@@ -159,5 +160,44 @@ func TestDemangleTree_UsesMockTrace(t *testing.T) {
 		if len(node.Function) > 5 && node.Function[:5] == "func[" {
 			t.Errorf("readable function was mangled: %q", node.Function)
 		}
+	}
+}
+
+func TestDemangleTree_GracefulWithMalformedSymbols(t *testing.T) {
+	// Test that malformed symbols in the SymbolTable don't crash demangling
+	table := demangle.SymbolTable{
+		42: "_ZNinvalid_mangled_symbol", // Malformed legacy symbol
+		43: "_Rinvalid_v0_symbol",      // Malformed v0 symbol
+		44: "_ZN<script>alert(1)</script>6invokeE", // Dangerous characters
+	}
+
+	root := trace.NewTraceNode("root", "transaction")
+	root.Function = "func[42]"
+	
+	child1 := trace.NewTraceNode("child1", "contract_call")
+	child1.Function = "func[43]"
+	root.AddChild(child1)
+	
+	child2 := trace.NewTraceNode("child2", "host_fn")
+	child2.Function = "func[44]"
+	child1.AddChild(child2)
+
+	// This should not panic and should produce safe fallback labels
+	trace.DemangleTree(root, table)
+
+	// Verify that the functions were transformed (not left as func[N])
+	if root.Function == "func[42]" {
+		t.Error("Malformed symbol should be replaced with fallback")
+	}
+	if child1.Function == "func[43]" {
+		t.Error("Malformed v0 symbol should be replaced with fallback")
+	}
+	if child2.Function == "func[44]" {
+		t.Error("Dangerous symbol should be replaced with sanitized fallback")
+	}
+
+	// Verify that dangerous characters are not present in output
+	if strings.Contains(root.Function, "<script>") || strings.Contains(child1.Function, "<script>") || strings.Contains(child2.Function, "<script>") {
+		t.Error("Output should not contain dangerous characters")
 	}
 }

@@ -26,10 +26,10 @@ func ValidatePayloadSize(payloadSize int64) error {
 	if payloadSize > WarningThreshold {
 		logger.Logger.Warn(
 			"Payload size approaching limit",
-			"currentSize", formatBytes(payloadSize),
-			"warningThreshold", formatBytes(WarningThreshold),
-			"maxSize", formatBytes(MaxPayloadSize),
-			"remaining", formatBytes(MaxPayloadSize-payloadSize),
+			"currentSize", formatPayloadBytes(payloadSize),
+			"warningThreshold", formatPayloadBytes(WarningThreshold),
+			"maxSize", formatPayloadBytes(MaxPayloadSize),
+			"remaining", formatPayloadBytes(MaxPayloadSize-payloadSize),
 		)
 	}
 
@@ -39,8 +39,8 @@ func ValidatePayloadSize(payloadSize int64) error {
 	return nil
 }
 
-// formatBytes converts bytes to a human-readable string (e.g., "1.5 MB")
-func formatBytes(bytes int64) string {
+// formatPayloadBytes converts bytes to a human-readable string (e.g., "1.5 MB")
+func formatPayloadBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)

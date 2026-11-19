@@ -4,10 +4,8 @@
 package trace
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/abi"
@@ -33,8 +31,17 @@ type ExecutionState struct {
 	WasmInstruction  string                  `json:"wasm_instruction,omitempty"`
 	SourceFile       string                  `json:"source_file,omitempty"`
 	SourceLine       int                     `json:"source_line,omitempty"`
+	SourceColumn     int                     `json:"source_column,omitempty"`
+	ConfidenceLevel  string                  `json:"confidence_level,omitempty"`
+	ConfidenceReason string                 `json:"confidence_reason,omitempty"`
 	GitHubLink       string                  `json:"github_link,omitempty"`
 	Cost             *CostAnnotation         `json:"cost,omitempty"`
+	// SequenceID is a monotonically increasing identifier assigned at collection time
+	// to preserve state order across serialization, filtering, and merging operations.
+	SequenceID uint64 `json:"sequence_id,omitempty"`
+	// ParentSequenceID tracks the parent state for nested call relationships.
+	// Zero indicates no parent (top-level state).
+	ParentSequenceID uint64 `json:"parent_sequence_id,omitempty"`
 }
 
 // DefaultSnapshotInterval is the number of steps between state snapshots.
@@ -69,6 +76,7 @@ type ExecutionTrace struct {
 	SnapshotInterval int                         `json:"snapshot_interval"`
 
 	cachedSubcallGraph *SubcallGraph `json:"-"`
+	sequencer           *EventSequencer `json:"-"`
 }
 
 // NewExecutionTrace creates a new execution trace.
@@ -86,6 +94,7 @@ func NewExecutionTrace(txHash string, snapshotInterval int) *ExecutionTrace {
 		Snapshots:        make([]StateSnapshot, 0),
 		CurrentStep:      0,
 		SnapshotInterval: snapshotInterval,
+		sequencer:        NewEventSequencer(),
 	}
 }
 
@@ -109,9 +118,18 @@ func (t *ExecutionTrace) ensureSnapshot(idx int) {
 // Snapshot data (HostState/Memory) is NOT computed here; it is deferred until
 // the first call to ReconstructStateAt that needs this snapshot. This keeps
 // AddState O(1) and avoids blocking the caller while parsing large traces.
+// Sequence IDs are assigned automatically to preserve deterministic ordering.
 func (t *ExecutionTrace) AddState(state ExecutionState) {
 	state.Step = len(t.States)
 	state.Timestamp = time.Now()
+	// Assign sequence ID for deterministic ordering
+	if state.SequenceID == 0 && t.sequencer != nil {
+		state.SequenceID = t.sequencer.NextSequenceID()
+	}
+	// Set parent relationship from current sequencer state
+	if state.ParentSequenceID == 0 && t.sequencer != nil {
+		state.ParentSequenceID = t.sequencer.CurrentParent()
+	}
 	t.States = append(t.States, state)
 
 	// Register a snapshot placeholder at each interval boundary.
@@ -295,138 +313,6 @@ func (t *ExecutionTrace) ToJSON() ([]byte, error) {
 	return json.MarshalIndent(t, "", "  ")
 }
 
-// ExportJSON returns a deterministic, schema-versioned JSON export of the trace.
-// Maps are converted to sorted key/value arrays and timestamps are normalised
-// to second precision to reduce non-determinism across runs.
-func (t *ExecutionTrace) ExportJSON(schemaVersion string, generatedAt time.Time) ([]byte, error) {
-	type kv struct {
-		Key   string      `json:"key"`
-		Value interface{} `json:"value"`
-	}
-
-	type stateExport struct {
-		Step             int                    `json:"step"`
-		Timestamp        string                 `json:"timestamp"`
-		Operation        string                 `json:"operation"`
-		EventType        string                 `json:"event_type,omitempty"`
-		ContractID       string                 `json:"contract_id,omitempty"`
-		Function         string                 `json:"function,omitempty"`
-		ContractMetadata *abi.ContractMetadata  `json:"contract_metadata,omitempty"`
-		Arguments        []interface{}          `json:"arguments,omitempty"`
-		RawArguments     []string               `json:"raw_arguments,omitempty"`
-		ReturnValue      interface{}            `json:"return_value,omitempty"`
-		RawReturnValue   string                 `json:"raw_return_value,omitempty"`
-		Error            string                 `json:"error,omitempty"`
-		HostState        []kv                   `json:"host_state,omitempty"`
-		Memory           []kv                   `json:"memory,omitempty"`
-		WasmInstruction  string                 `json:"wasm_instruction,omitempty"`
-		SourceFile       string                 `json:"source_file,omitempty"`
-		SourceLine       int                    `json:"source_line,omitempty"`
-		GitHubLink       string                 `json:"github_link,omitempty"`
-		Cost             *CostAnnotation        `json:"cost,omitempty"`
-	}
-
-	type snapshotExport struct {
-		Step      int    `json:"step"`
-		Timestamp string `json:"timestamp"`
-		CallStack []string `json:"call_stack"`
-		HostState []kv  `json:"host_state,omitempty"`
-		Memory    []kv  `json:"memory,omitempty"`
-	}
-
-	// Helper to convert a map to sorted kv slice
-	toKVS := func(m map[string]interface{}) []kv {
-		if m == nil {
-			return nil
-		}
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		out := make([]kv, 0, len(keys))
-		for _, k := range keys {
-			out = append(out, kv{Key: k, Value: m[k]})
-		}
-		return out
-	}
-
-	// normalise timestamp helper
-	norm := func(ti time.Time) string {
-		if ti.IsZero() {
-			return ""
-		}
-		return ti.UTC().Truncate(time.Second).Format(time.RFC3339)
-	}
-
-	// build export object
-	var states []stateExport
-	for _, s := range t.States {
-		states = append(states, stateExport{
-			Step:              s.Step,
-			Timestamp:         norm(s.Timestamp),
-			Operation:         s.Operation,
-			EventType:         s.EventType,
-			ContractID:        s.ContractID,
-			Function:          s.Function,
-			ContractMetadata:  s.ContractMetadata,
-			Arguments:         s.Arguments,
-			RawArguments:      s.RawArguments,
-			ReturnValue:       s.ReturnValue,
-			RawReturnValue:    s.RawReturnValue,
-			Error:             s.Error,
-			HostState:         toKVS(s.HostState),
-			Memory:            toKVS(s.Memory),
-			WasmInstruction:   s.WasmInstruction,
-			SourceFile:        s.SourceFile,
-			SourceLine:        s.SourceLine,
-			GitHubLink:        s.GitHubLink,
-			Cost:              s.Cost,
-		})
-	}
-
-	var snaps []snapshotExport
-	for _, sp := range t.Snapshots {
-		snaps = append(snaps, snapshotExport{
-			Step: sp.Step,
-			Timestamp: norm(sp.Timestamp),
-			CallStack: sp.CallStack,
-			HostState: toKVS(sp.HostState),
-			Memory: toKVS(sp.Memory),
-		})
-	}
-
-	// fingerprint transaction hash to avoid exporting raw identifiers
-	h := sha256.Sum256([]byte(t.TransactionHash))
-	fingerprint := fmt.Sprintf("sha256:%x", h)[:32]
-
-	gen := generatedAt
-	if gen.IsZero() {
-		gen = time.Now()
-	}
-
-	decodedEvents := DecodeDiagnosticEventsWithSchemas(toLocalDiagnosticEvents(t.DiagnosticEvents), nil)
-
-	exportObj := map[string]interface{}{
-		"schema_version": schemaVersion,
-		"generated_at": gen.UTC().Truncate(time.Second).Format(time.RFC3339),
-		"trace": map[string]interface{}{
-			"transaction_hash":  fingerprint,
-			"start_time":        norm(t.StartTime),
-			"end_time":          norm(t.EndTime),
-			"states":            states,
-			"snapshots":         snaps,
-			"diagnostic_events": t.DiagnosticEvents,
-			"decoded_events":    decodedEvents,
-			"annotations":       t.Annotations,
-			"subcall_graph":     exportSubcallGraph(t.SubcallGraph()),
-		},
-	}
-
-	// Use MarshalIndent for stable whitespace; maps inside are ordered via slices above.
-	return json.MarshalIndent(exportObj, "", "  ")
-}
-
 // FromJSON deserializes the trace from JSON
 func FromJSON(data []byte) (*ExecutionTrace, error) {
 	var trace ExecutionTrace
@@ -566,15 +452,18 @@ func exportSubcallGraph(g *SubcallGraph) interface{} {
 
 // toLocalDiagnosticEvents converts simulator.DiagnosticEvent slice to the local
 // trace.DiagnosticEvent type for use with decoder functions in this package.
+// Preserves sequence IDs and parent relationships from the source events.
 func toLocalDiagnosticEvents(events []simulator.DiagnosticEvent) []DiagnosticEvent {
 	out := make([]DiagnosticEvent, len(events))
 	for i, e := range events {
 		out[i] = DiagnosticEvent{
-			EventType:       e.EventType,
-			ContractID:      e.ContractID,
-			Topics:          e.Topics,
-			Data:            e.Data,
-			WasmInstruction: e.WasmInstruction,
+			EventType:         e.EventType,
+			ContractID:        e.ContractID,
+			Topics:            e.Topics,
+			Data:              e.Data,
+			WasmInstruction:   e.WasmInstruction,
+			SequenceID:        e.SequenceID,
+			ParentSequenceID:  e.ParentSequenceID,
 		}
 	}
 	return out

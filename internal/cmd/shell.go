@@ -71,6 +71,10 @@ func init() {
 }
 
 func runShell(cmd *cobra.Command, args []string) error {
+	if err := requireInteractiveShell(cmd); err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 
 	// Initialize RPC client

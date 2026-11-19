@@ -56,6 +56,11 @@ type DiagnosticReport struct {
 	// ConflictingHandler is the handler path that currently owns the
 	// registration when ConflictDetected is true.
 	ConflictingHandler string `json:"conflicting_handler,omitempty"`
+	// TraceContext carries the W3C trace identifiers for the active diagnostic
+	// span, when the diagnostic was triggered by a deep-link invocation that
+	// included trace-context parameters. Populated by the caller via
+	// DiagnosticReport.WithTraceContext; nil when no context is available.
+	TraceContext *URITraceContext `json:"trace_context,omitempty"`
 }
 
 // RepairResult describes the outcome of a Repair attempt.
@@ -69,6 +74,14 @@ type RepairResult struct {
 	// PermissionHint is set when the repair failed due to insufficient
 	// privileges, with a platform-specific hint for the user.
 	PermissionHint string
+}
+
+// WithTraceContext attaches W3C trace-context identifiers to the report so
+// that downstream telemetry can correlate this diagnostic run with its
+// originating distributed trace. Returns the report for chaining.
+func (r *DiagnosticReport) WithTraceContext(tc *URITraceContext) *DiagnosticReport {
+	r.TraceContext = tc
+	return r
 }
 
 // Diagnose inspects the current protocol registration state and returns a

@@ -1,0 +1,7 @@
+{
+  "jsonrpc": "1.0",
+  "result": {
+    "status": "healthy"
+  },
+  "id": 1
+}

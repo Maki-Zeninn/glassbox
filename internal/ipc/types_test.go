@@ -122,3 +122,74 @@ func TestSimulationResponseSchemaMarshalRoundTripsSnapshots(t *testing.T) {
 		t.Fatalf("expected 1 snapshot id, got %d", got)
 	}
 }
+
+// ─── IPC Protocol Version Negotiation (Issue #824) ──────────────────────────
+
+func TestHandshakeRequest_MarshalRoundTrip_ClientVersion(t *testing.T) {
+	req := HandshakeRequest{
+		Type:             HandshakeRequestType,
+		ProtocolVersion:  21,
+		ClientVersion:    "1.2.3",
+		RequiredFeatures: []string{"snapshot_streaming"},
+		MaxRequestBytes:  1024 * 1024,
+	}
+	data, err := req.Marshal()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	decoded, err := UnmarshalHandshakeRequest(data)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if decoded.ClientVersion != "1.2.3" {
+		t.Errorf("expected client_version '1.2.3', got %q", decoded.ClientVersion)
+	}
+	if decoded.ProtocolVersion != 21 {
+		t.Errorf("expected protocol_version 21, got %d", decoded.ProtocolVersion)
+	}
+}
+
+func TestHandshakeResponse_MarshalRoundTrip_VersionBounds(t *testing.T) {
+	resp := HandshakeResponse{
+		Type:              HandshakeResponseType,
+		SimulatorBuild:    "abc123",
+		ProtocolVersion:   21,
+		MinClientVersion:  "1.0.0",
+		MaxClientVersion:  "2.0.0",
+		SupportedFeatures: []string{"snapshot_streaming"},
+		MaxRequestBytes:   1024 * 1024,
+	}
+	data, err := resp.Marshal()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	decoded, err := UnmarshalHandshakeResponse(data)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if decoded.MinClientVersion != "1.0.0" {
+		t.Errorf("expected min_client_version '1.0.0', got %q", decoded.MinClientVersion)
+	}
+	if decoded.MaxClientVersion != "2.0.0" {
+		t.Errorf("expected max_client_version '2.0.0', got %q", decoded.MaxClientVersion)
+	}
+}
+
+func TestHandshakeResponse_ErrorCode(t *testing.T) {
+	resp := HandshakeResponse{
+		Type:      HandshakeResponseType,
+		Error:     "simulator protocol version incompatible",
+		ErrorCode: "incompatible_version",
+	}
+	data, err := resp.Marshal()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	decoded, err := UnmarshalHandshakeResponse(data)
+	if err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if decoded.ErrorCode != "incompatible_version" {
+		t.Errorf("expected error_code 'incompatible_version', got %q", decoded.ErrorCode)
+	}
+}

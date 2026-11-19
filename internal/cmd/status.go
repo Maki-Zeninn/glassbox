@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/mattn/go-isatty"
+	"github.com/dotandev/glassbox/internal/termctx"
 	"github.com/spf13/cobra"
 )
 
@@ -71,7 +71,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Determine whether to attempt repair
 	shouldFix := statusFixFlag
-	if !shouldFix && isInteractiveTTY(cmd) {
+	if !shouldFix && !termctx.GlobalNonInteractive() {
 		shouldFix = promptYesNo(cmd, "Would you like Glassbox to repair the protocol registration? [y/n]: ")
 	}
 
@@ -312,15 +312,6 @@ Terminal=false`, cliPath)
 	_ = exec.Command("update-desktop-database", appsDir).Run()
 
 	return nil
-}
-
-// isInteractiveTTY returns true when stdin is attached to an interactive terminal.
-func isInteractiveTTY(cmd *cobra.Command) bool {
-	inFile, ok := cmd.InOrStdin().(*os.File)
-	if !ok {
-		return false
-	}
-	return isatty.IsTerminal(inFile.Fd())
 }
 
 // promptYesNo prints the prompt and waits for a y/n answer. Returns true for "y" or "yes".

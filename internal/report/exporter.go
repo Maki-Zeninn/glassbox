@@ -13,21 +13,35 @@ import (
 	"time"
 
 	"github.com/dotandev/glassbox/internal/errors"
+	"github.com/dotandev/glassbox/internal/redaction"
 )
 
 type Exporter struct {
 	outputDir string
+	profile   *redaction.Profile
 }
 
 func NewExporter(outputDir string) (*Exporter, error) {
+	return NewExporterWithProfile(outputDir, nil)
+}
+
+// NewExporterWithProfile creates an exporter that applies the given redaction
+// profile to all report data before rendering. If profile is nil, no redaction
+// is applied.
+func NewExporterWithProfile(outputDir string, profile *redaction.Profile) (*Exporter, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, errors.WrapValidationError(fmt.Sprintf("failed to create output directory: %v", err))
 	}
 
-	return &Exporter{outputDir: outputDir}, nil
+	return &Exporter{outputDir: outputDir, profile: profile}, nil
 }
 
 func (e *Exporter) Export(report *Report, format string) (string, error) {
+	// Apply redaction profile before rendering
+	if e.profile != nil {
+		report = e.redactReport(report)
+	}
+
 	filename := generateFilename(report.Title, format)
 	filepath := filepath.Join(e.outputDir, filename)
 
@@ -70,6 +84,62 @@ func (e *Exporter) ExportMultiple(report *Report, formats []string) (map[string]
 	}
 
 	return results, nil
+}
+
+// redactReport returns a copy of the report with sensitive fields redacted
+// according to the configured profile.
+func (e *Exporter) redactReport(r *Report) *Report {
+	if r == nil || e.profile == nil {
+		return r
+	}
+
+	// Deep copy the report
+	out := *r
+
+	if r.Summary != nil {
+		s := *r.Summary
+		s.KeyFindings = redactStringSlice(e.profile, s.KeyFindings)
+		out.Summary = &s
+	}
+
+	if r.Execution != nil {
+		ex := *r.Execution
+		ex.TransactionHash = redactValue(e.profile, ex.TransactionHash)
+		for i := range ex.Steps {
+			ex.Steps[i].ContractID = redactValue(e.profile, ex.Steps[i].ContractID)
+			ex.Steps[i].Details = redactValue(e.profile, ex.Steps[i].Details)
+			ex.Steps[i].SourceFile = redactValue(e.profile, ex.Steps[i].SourceFile)
+		}
+		for i := range ex.ErrorTrace {
+			ex.ErrorTrace[i] = redactValue(e.profile, ex.ErrorTrace[i])
+		}
+		out.Execution = &ex
+	}
+
+	if r.Metadata != nil {
+		m := *r.Metadata
+		if m.Tags != nil {
+			m.Tags = e.profile.ApplyToStringMap(m.Tags)
+		}
+		out.Metadata = &m
+	}
+
+	return &out
+}
+
+func redactValue(p *redaction.Profile, s string) string {
+	return p.Apply(s)
+}
+
+func redactStringSlice(p *redaction.Profile, ss []string) []string {
+	if ss == nil {
+		return nil
+	}
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = p.Apply(s)
+	}
+	return out
 }
 
 func generateFilename(title string, format string) string {

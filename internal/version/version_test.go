@@ -64,33 +64,42 @@ func TestShortSHA_Unknown(t *testing.T) {
 func TestUserAgent_Format(t *testing.T) {
 	origV := Version
 	origC := CommitSHA
+	origB := BuildDate
 	t.Cleanup(func() {
 		Version = origV
 		CommitSHA = origC
+		BuildDate = origB
 	})
 
 	Version = "1.2.3"
 	CommitSHA = "deadbeef1234"
+	BuildDate = "2026-01-01"
 
 	ua := UserAgent()
-	if !strings.HasPrefix(ua, "glassbox/1.2.3") {
-		t.Errorf("UserAgent() = %q; expected prefix glassbox/1.2.3", ua)
+	if ua != "glassbox/1.2.3 (deadbeef, 2026-01-01)" {
+		t.Errorf("UserAgent() = %q; expected %q", ua, "glassbox/1.2.3 (deadbeef, 2026-01-01)")
 	}
-	if !strings.Contains(ua, "deadbeef") {
-		t.Errorf("UserAgent() = %q; expected short SHA deadbeef", ua)
+
+	BuildDate = "unknown"
+	uaUnknown := UserAgent()
+	if uaUnknown != "glassbox/1.2.3 (deadbeef)" {
+		t.Errorf("UserAgent() = %q; expected %q", uaUnknown, "glassbox/1.2.3 (deadbeef)")
 	}
 }
 
 func TestUserAgent_DevBuild(t *testing.T) {
 	origV := Version
 	origC := CommitSHA
+	origB := BuildDate
 	t.Cleanup(func() {
 		Version = origV
 		CommitSHA = origC
+		BuildDate = origB
 	})
 
 	Version = "0.0.0-dev"
 	CommitSHA = "unknown"
+	BuildDate = "unknown"
 
 	ua := UserAgent()
 	if !strings.Contains(ua, "0.0.0-dev") {
@@ -140,5 +149,17 @@ func TestValidateVersionString_NonNumeric(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "non-digit") {
 		t.Errorf("error should mention non-digit, got: %q", err.Error())
+	}
+}
+
+func TestValidateVersionString_LeadingZero(t *testing.T) {
+	for _, v := range []string{"01.0.0", "1.02.3", "1.0.00"} {
+		err := ValidateVersionString(v)
+		if err == nil {
+			t.Fatalf("expected error for %q (semver forbids leading zeros)", v)
+		}
+		if !strings.Contains(err.Error(), "leading zero") {
+			t.Errorf("error for %q should mention 'leading zero', got: %q", v, err.Error())
+		}
 	}
 }

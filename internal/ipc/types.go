@@ -145,3 +145,74 @@ const (
 	Public    Network = "public"
 	Testnet   Network = "testnet"
 )
+
+// HandshakeRequest is sent to the simulator before any transaction is executed.
+// It communicates the Go-side protocol version and the feature set that must be
+// present for the session to proceed.
+type HandshakeRequest struct {
+	// Type is always "handshake" — used to distinguish this from a simulation request.
+	Type string `json:"type"`
+	// ProtocolVersion is the Stellar protocol version the client expects to run.
+	ProtocolVersion uint32 `json:"protocol_version"`
+	// ClientVersion is the semantic version of the Go-side client (e.g. "1.2.3").
+	// The simulator uses this to select compatible behaviour when multiple
+	// client versions are in the field.
+	ClientVersion string `json:"client_version,omitempty"`
+	// RequiredFeatures lists capability identifiers that must appear in the
+	// simulator's SupportedFeatures response. The session is aborted if any are absent.
+	RequiredFeatures []string `json:"required_features,omitempty"`
+	// MaxRequestBytes is the largest IPC request payload the client will send.
+	// The simulator may reject the session if it cannot accept payloads that large.
+	MaxRequestBytes int64 `json:"max_request_bytes,omitempty"`
+}
+
+// HandshakeResponse is the simulator's reply to a HandshakeRequest.
+type HandshakeResponse struct {
+	// Type is always "handshake_ack".
+	Type string `json:"type"`
+	// SimulatorBuild is an opaque build identifier (e.g. git SHA or release tag).
+	SimulatorBuild string `json:"simulator_build"`
+	// ProtocolVersion is the simulator's native Stellar protocol version.
+	ProtocolVersion uint32 `json:"protocol_version"`
+	// MinClientVersion is the oldest client version the simulator still supports.
+	// When the client's version is older than this, the session must not proceed.
+	MinClientVersion string `json:"min_client_version,omitempty"`
+	// MaxClientVersion is the newest client version the simulator supports.
+	// When the client's version is newer than this, the session must not proceed.
+	MaxClientVersion string `json:"max_client_version,omitempty"`
+	// SupportedFeatures lists capability identifiers available in this build.
+	SupportedFeatures []string `json:"supported_features"`
+	// MaxRequestBytes is the largest IPC request payload the simulator accepts.
+	MaxRequestBytes int64 `json:"max_request_bytes,omitempty"`
+	// Error is non-empty when the simulator rejects the handshake.
+	Error string `json:"error,omitempty"`
+	// ErrorCode provides a machine-readable reason for the rejection.
+	// Known values: "incompatible_version", "missing_capability", "payload_too_large".
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// HandshakeRequestType and HandshakeResponseType are the fixed JSON type tags.
+const (
+	HandshakeRequestType  = "handshake"
+	HandshakeResponseType = "handshake_ack"
+)
+
+func UnmarshalHandshakeRequest(data []byte) (HandshakeRequest, error) {
+	var r HandshakeRequest
+	err := json.Unmarshal(data, &r)
+	return r, err
+}
+
+func (r *HandshakeRequest) Marshal() ([]byte, error) {
+	return json.Marshal(r)
+}
+
+func UnmarshalHandshakeResponse(data []byte) (HandshakeResponse, error) {
+	var r HandshakeResponse
+	err := json.Unmarshal(data, &r)
+	return r, err
+}
+
+func (r *HandshakeResponse) Marshal() ([]byte, error) {
+	return json.Marshal(r)
+}

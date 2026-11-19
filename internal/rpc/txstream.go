@@ -365,7 +365,7 @@ func (s *pollingStreamer) queryTxStatus(ctx context.Context, hash string) (TxSta
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	respBytes, err := io.ReadAll(httpResp.Body)
+	respBytes, err := s.client.readResponseBody(httpResp.Body, "getTransaction")
 	if err != nil {
 		return TxStatus{}, fmt.Errorf("poll: read body: %w", err)
 	}

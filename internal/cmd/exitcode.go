@@ -36,6 +36,9 @@ var userErrorCodes = map[errors.ErstErrorCode]bool{
 	errors.ErstUnauthorized:        true,
 	errors.ErstInvalidNetwork:      true,
 	errors.ErstNetworkNotFound:     true,
+	// Session concurrency errors are user-actionable (retry or use --force).
+	errors.ErstSessionConflict: true,
+	errors.ErstSessionLockHeld: true,
 }
 
 // configErrorCodes are ErstErrorCodes that map to ExitConfigError.
@@ -47,11 +50,14 @@ var configErrorCodes = map[errors.ErstErrorCode]bool{
 // ExitCodeFor maps an error to the appropriate exit code using the taxonomy
 // defined above. It inspects ErstError codes when available, falling back to
 // sentinel matching and finally to ExitInternalError.
+//
+// Context cancellation (e.g., SIGINT-triggered cancellation or explicit cancel)
+// maps to InterruptExitCode (130), matching the POSIX SIGINT convention.
 func ExitCodeFor(err error) int {
 	if err == nil {
 		return ExitSuccess
 	}
-	if IsInterrupted(err) {
+	if IsInterrupted(err) || IsCancellation(err) {
 		return InterruptExitCode
 	}
 

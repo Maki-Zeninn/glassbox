@@ -44,6 +44,17 @@ type TrapInfo struct {
 	// to point at the innermost fault site so downstream consumers that do not
 	// understand inlining still get a correct location.
 	InlinedChain []InlinedFrame
+	// OriginClass describes where the faulted source location came from.
+	// It mirrors the OriginClass constants in internal/sourcemap/origin.go:
+	//   "user"      — developer-authored source
+	//   "generated" — machine-generated build output (target/, .wasm, …)
+	//   "external"  — external crate / dependency
+	//   "unknown"   — could not be determined (default when empty)
+	//
+	// FormatTrapInfo uses this value to annotate the source location line
+	// so developers immediately see whether the trap site is in their own
+	// code or inside a generated or vendored path.
+	OriginClass string
 }
 
 // InlinedFrame describes one level of an inlined call chain.
@@ -339,7 +350,8 @@ func FormatTrapInfo(trap *TrapInfo) string {
 	sb.WriteString(trap.Message)
 	sb.WriteString("\n")
 
-	// Source location
+	// Source location — include origin label so developers immediately see
+	// whether the trap site is in their own code or a generated/external path.
 	if trap.SourceLocation != nil {
 		sb.WriteString("\n" + visualizer.Symbol("pin") + " Location: ")
 		if trap.SourceLocation.File != "" {
@@ -347,6 +359,12 @@ func FormatTrapInfo(trap *TrapInfo) string {
 			sb.WriteString(":")
 		}
 		fmt.Fprintf(&sb, "%d", trap.SourceLocation.Line)
+		// Append the origin label when present and non-user.
+		// "user" and empty produce no annotation so developer code is clean.
+		if label := originClassLabel(trap.OriginClass); label != "" {
+			sb.WriteString("  ")
+			sb.WriteString(label)
+		}
 		sb.WriteString("\n")
 	}
 
@@ -484,6 +502,28 @@ func toString(v interface{}) string {
 		return "false"
 	default:
 		return "<complex>"
+	}
+}
+
+// originClassLabel returns the display label for a TrapInfo.OriginClass value.
+// It mirrors sourcemap.OriginClass.Label() without importing the sourcemap
+// package from the trace package (which would create an import cycle).
+//
+// Values:
+//   "generated" → "[generated]"
+//   "external"  → "[external]"
+//   "unknown"   → "[unknown origin]"
+//   "user" / "" → ""   (no label — developer code is the expected happy path)
+func originClassLabel(class string) string {
+	switch class {
+	case "generated":
+		return "[generated]"
+	case "external":
+		return "[external]"
+	case "unknown":
+		return "[unknown origin]"
+	default:
+		return ""
 	}
 }
 

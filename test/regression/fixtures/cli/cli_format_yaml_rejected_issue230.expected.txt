@@ -1,0 +1,7 @@
+# Expected output fragment for issue #230.
+# The error message must contain "format" or "yaml" and must NOT mention
+# "Connecting" or "Simulating" (the check must fire before any simulation).
+#
+# Matching rule: substring match (case-insensitive) against combined stdout+stderr.
+# Placeholder <VERSION> is stripped before matching.
+format

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"strings"
 	"testing"
 )
 
@@ -205,7 +206,7 @@ func TestPkcs11ConfigFromEnv_MissingModuleHasRemediation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when GLASSBOX_PKCS11_MODULE is empty")
 	}
-	if !containsSubstring(err.Error(), "remediation") {
+	if !strings.Contains(err.Error(), "remediation") {
 		t.Errorf("error should include remediation hint: %v", err)
 	}
 }
@@ -218,7 +219,7 @@ func TestPkcs11ConfigFromEnv_MissingPINHasRemediation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when GLASSBOX_PKCS11_PIN is empty")
 	}
-	if !containsSubstring(err.Error(), "remediation") {
+	if !strings.Contains(err.Error(), "remediation") {
 		t.Errorf("error should include remediation hint: %v", err)
 	}
 }
@@ -228,17 +229,20 @@ func TestNewPkcs11Signer_EmptyModulePathReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty module path")
 	}
-	if !containsSubstring(err.Error(), "remediation") {
+	if !strings.Contains(err.Error(), "remediation") {
 		t.Errorf("error should include remediation hint: %v", err)
 	}
 }
 
 // containsSubstring reports whether s contains sub as a substring.
-func containsSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
+//
+// Pre-existing helper kept identical to its twin in pkcs11_validator_test.go
+// so the two test files can coexist in the same package; the Go test
+// compiler rejects duplicate function declarations in a single package.
+// The body is intentionally a loop (not strings.Contains) so each
+// package still controls its own assertion shape without pulling the
+// `strings` import into the PKCS#11 test surface.
+//
+// Renamed to avoid clashing with the identically-named helper in
+// pkcs11_validator_test.go when the two test files are compiled
+// together as part of the `internal/signer` test binary.

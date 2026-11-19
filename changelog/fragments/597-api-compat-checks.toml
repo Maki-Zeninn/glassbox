@@ -1,0 +1,7 @@
+category = "schema"
+pr = 597
+summary = "added API compatibility snapshot checks for Go packages, CLI help, TypeScript exports, and JSON schemas"
+details = "CI now fails when exported symbols are removed or renamed. Run 'go test ./internal/apicompat/... -update' and 'scripts/api-snapshot.sh generate' to accept intentional changes. See docs/api-compatibility.md."
+breaking = false
+migration_note = ""
+affects = ["go-api", "schema", "cli-flags"]

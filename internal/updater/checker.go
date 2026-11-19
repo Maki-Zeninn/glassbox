@@ -19,18 +19,23 @@ import (
 )
 
 const (
-	// GitHubAPIURL is the endpoint for fetching the latest release
+	// GitHubAPIURL is the endpoint for fetching the latest release.
+	// GitHub unauthenticated API rate limit is 60 req/hr per IP. The Checker
+	// honours CheckInterval to stay well below this. In shared CI environments,
+	// set GITHUB_TOKEN to use authenticated requests with a 5000 req/hr limit.
 	GitHubAPIURL = "https://api.github.com/repos/dotandev/glassbox/releases/latest"
 	// CheckInterval is how often we check for updates (24 hours)
 	CheckInterval = 24 * time.Hour
-	// RequestTimeout is the maximum time to wait for GitHub API
-	RequestTimeout = 5 * time.Second
+	// UpdateCheckTimeout is the maximum time to wait for GitHub API
+	UpdateCheckTimeout = 5 * time.Second
 )
 
 // Checker handles update checking logic
 type Checker struct {
 	currentVersion string
 	cacheDir       string
+	apiURL         string       // overrides GitHubAPIURL when non-empty (for tests)
+	httpClient     *http.Client // overrides the default client when non-nil (for tests)
 }
 
 // GitHubRelease represents the GitHub API response for a release
@@ -68,7 +73,7 @@ func (c *Checker) CheckForUpdates() {
 	}
 
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), UpdateCheckTimeout)
 	defer cancel()
 
 	// Fetch latest version from GitHub
@@ -91,6 +96,9 @@ func (c *Checker) CheckForUpdates() {
 func (c *Checker) shouldCheck() (bool, error) {
 	cacheFile := filepath.Join(c.cacheDir, "last_update_check")
 
+	// The cache file stores CacheData JSON. If the file is absent or
+	// unreadable, treat this as "check now" to ensure updates are detected on
+	// first run.
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
 		// Cache doesn't exist or can't be read - should check
@@ -107,9 +115,15 @@ func (c *Checker) shouldCheck() (bool, error) {
 	return time.Since(cache.LastCheck) >= CheckInterval, nil
 }
 
-// fetchLatestVersion calls GitHub API to get the latest release
+// fetchLatestVersion calls the GitHub API to get the latest release tag.
+// Uses c.apiURL when set (allows test override) and c.httpClient when non-nil.
 func (c *Checker) fetchLatestVersion(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", GitHubAPIURL, nil)
+	url := c.apiURL
+	if url == "" {
+		url = GitHubAPIURL
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -118,11 +132,12 @@ func (c *Checker) fetchLatestVersion(ctx context.Context) (string, error) {
 	req.Header.Set("User-Agent", "Glassbox-cli")
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	client := &http.Client{
-		Timeout: RequestTimeout,
+	hc := c.httpClient
+	if hc == nil {
+		hc = &http.Client{Timeout: UpdateCheckTimeout}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -140,20 +155,62 @@ func (c *Checker) fetchLatestVersion(ctx context.Context) (string, error) {
 
 	var release GitHubRelease
 	if err := json.Unmarshal(body, &release); err != nil {
-		return "", err
+		return "", fmt.Errorf("malformed release metadata: %w", err)
 	}
 
-	return release.TagName, nil
+	tag := strings.TrimSpace(release.TagName)
+	if tag == "" {
+		return "", fmt.Errorf("release metadata missing tag_name")
+	}
+	// Validate that the tag looks like a semver-ish string before accepting it.
+	// This guards against a compromised or malformed API response supplying
+	// arbitrary data that could confuse the version comparator or the banner.
+	if !isValidVersionTag(tag) {
+		return "", fmt.Errorf("release tag %q does not look like a valid version", tag)
+	}
+
+	return tag, nil
+}
+
+// isValidVersionTag returns true when tag is a plausible semver/calver string.
+// It intentionally accepts only printable ASCII that starts with an optional "v"
+// followed by digits and dots (with optional pre-release suffixes like "-rc1").
+// Any URL or shell metacharacter in the tag causes rejection.
+func isValidVersionTag(tag string) bool {
+	if len(tag) == 0 || len(tag) > 64 {
+		return false
+	}
+	t := strings.TrimPrefix(tag, "v")
+	if len(t) == 0 {
+		return false
+	}
+	// Must start with a digit.
+	if t[0] < '0' || t[0] > '9' {
+		return false
+	}
+	// Allow [0-9A-Za-z.+-] only.
+	for _, ch := range t {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= 'a' && ch <= 'z') || ch == '.' || ch == '+' || ch == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // FetchReleaseInfo gets full information for a specific version or latest
-func (c *Checker) FetchReleaseInfo(ctx context.Context, version string) (*GitHubRelease, error) {
-	url := GitHubAPIURL
-	if version != "" && version != "latest" {
-		if !strings.HasPrefix(version, "v") {
-			version = "v" + version
+func (c *Checker) FetchReleaseInfo(ctx context.Context, ver string) (*GitHubRelease, error) {
+	base := c.apiURL
+	if base == "" {
+		base = GitHubAPIURL
+	}
+
+	url := base
+	if ver != "" && ver != "latest" {
+		if !strings.HasPrefix(ver, "v") {
+			ver = "v" + ver
 		}
-		url = fmt.Sprintf("https://api.github.com/repos/dotandev/glassbox/releases/tags/%s", version)
+		url = fmt.Sprintf("https://api.github.com/repos/dotandev/glassbox/releases/tags/%s", ver)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -164,18 +221,19 @@ func (c *Checker) FetchReleaseInfo(ctx context.Context, version string) (*GitHub
 	req.Header.Set("User-Agent", "Glassbox-cli")
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	client := &http.Client{
-		Timeout: RequestTimeout,
+	hc := c.httpClient
+	if hc == nil {
+		hc = &http.Client{Timeout: UpdateCheckTimeout}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("release %s not found", version)
+		return nil, fmt.Errorf("release %s not found", ver)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -188,6 +246,17 @@ func (c *Checker) FetchReleaseInfo(ctx context.Context, version string) (*GitHub
 	}
 
 	return &release, nil
+}
+
+// newTestChecker constructs a Checker with an overridden API URL and HTTP
+// client, used exclusively by tests to avoid real network calls.
+func newTestChecker(currentVersion, cacheDir, apiURL string, hc *http.Client) *Checker {
+	return &Checker{
+		currentVersion: currentVersion,
+		cacheDir:       cacheDir,
+		apiURL:         apiURL,
+		httpClient:     hc,
+	}
 }
 
 // compareVersions compares current vs latest version

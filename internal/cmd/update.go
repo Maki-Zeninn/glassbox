@@ -4,9 +4,7 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/dotandev/glassbox/internal/updater"
@@ -56,11 +54,13 @@ You can also specify a target version using the --version flag.`,
 		}
 
 		if !updateYesFlag {
-			fmt.Printf("Do you want to proceed with the update to %s? [y/N]: ", release.TagName)
-			reader := bufio.NewReader(os.Stdin)
-			input, _ := reader.ReadString('\n')
-			input = strings.TrimSpace(strings.ToLower(input))
-			if input != "y" && input != "yes" {
+			confirmed, err := confirmWithForceOrNonInteractive(cmd,
+				fmt.Sprintf("Do you want to proceed with the update to %s? [y/N]: ", release.TagName),
+				false, false)
+			if err != nil {
+				return err
+			}
+			if !confirmed {
 				fmt.Println("Update cancelled.")
 				return nil
 			}

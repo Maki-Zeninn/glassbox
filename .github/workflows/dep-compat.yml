@@ -1,0 +1,481 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# dep-compat.yml
+#
+# Scheduled dependency compatibility testing.
+#
+# WHAT IT DOES
+# ────────────
+# 1. Builds the current codebase (Go + Rust simulator).
+# 2. Runs the deterministic harness against a pinned test vector for each
+#    dependency group (stellar-sdk, soroban-host, crypto, rpc-client).
+# 3. Compares harness outputs against committed golden baselines.
+# 4. Classifies diffs: expected (schema/format) vs unexpected (semantic).
+# 5. Uploads the CompatReport JSON + Markdown summary as a review artifact.
+# 6. Runs the Go package tests in internal/depcompat/ to verify the comparison
+#    engine itself.
+#
+# WHAT IT DOES NOT DO
+# ───────────────────
+# - Does NOT push dependency bumps to any branch automatically.
+# - Does NOT create pull requests automatically.
+# - Does NOT merge any changes.
+# - Does NOT publish artifacts without a human triggering workflow_dispatch.
+# - Artifact upload is ALWAYS manual (upload-artifact is called but the
+#   artifact is a read-only review bundle; nothing is deployed from it).
+#
+# SCHEDULE
+# ────────
+# Runs every Monday at 09:00 UTC so results are available at the start of the
+# work week. Can also be triggered manually via workflow_dispatch with an
+# optional dep-group filter.
+#
+# HOW TO UPDATE GOLDEN BASELINES AFTER AN INTENTIONAL CHANGE
+# ──────────────────────────────────────────────────────────
+#   1. Identify the expected diffs in the uploaded compat-report.json artifact.
+#   2. Run locally:
+#        scripts/dep-compat-capture.sh --update-golden
+#   3. Review the diff:
+#        git diff internal/depcompat/testdata/golden/
+#   4. Commit and open a PR with the updated baselines.
+#
+# ARTIFACT RETENTION
+# ──────────────────
+# Compat report bundles are kept for 30 days (longer than the standard 7-day
+# failure-debug artifacts from ci-test.yml, since compat reviews span release
+# cycles).
+
+name: Dependency Compatibility
+
+on:
+  schedule:
+    # Every Monday at 09:00 UTC.
+    - cron: "0 9 * * 1"
+
+  # Run smoke tests on PRs that touch depcompat code, signer, or IPC so
+  # serialization and signing contract regressions surface before merge.
+  pull_request:
+    paths:
+      - "internal/depcompat/**"
+      - "internal/signer/**"
+      - "internal/ipc/**"
+      - "internal/manifest/**"
+      - ".github/workflows/dep-compat.yml"
+
+  workflow_dispatch:
+    inputs:
+      dep_group:
+        description: >
+          Dependency group to test. Leave blank to test all groups.
+          One of: stellar-sdk, soroban-host, crypto, rpc-client
+        required: false
+        default: ""
+      verbose:
+        description: "Print per-field diff details in logs (true/false)"
+        required: false
+        default: "false"
+
+# Only one scheduled run at a time; a new manual trigger does not cancel an
+# in-flight scheduled run.
+concurrency:
+  group: dep-compat-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read        # read source + golden baselines
+  # Explicitly NO write permissions — the job cannot push or open PRs.
+
+env:
+  GLASSBOX_TELEMETRY: "false"
+  ARTIFACT_RETENTION_DAYS: "30"
+  GOLDEN_DIR: "internal/depcompat/testdata/golden"
+  # Disable CGO for reproducible Go builds.
+  CGO_ENABLED: "0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ─── 1. Build ──────────────────────────────────────────────────────────────
+  build:
+    name: Build (Go + Rust simulator)
+    runs-on: ubuntu-latest
+
+    outputs:
+      # Pass the glassbox binary path to downstream jobs via artifact name.
+      artifact_name: glassbox-bin-${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Pin to the same channel used in Cargo.toml dev-dependencies.
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Rust target directory
+        uses: actions/cache@v4
+        with:
+          path: simulator/target
+          key: rust-target-${{ runner.os }}-${{ hashFiles('simulator/Cargo.lock') }}
+          restore-keys: |
+            rust-target-${{ runner.os }}-
+
+      # Build the Go CLI binary.
+      - name: Build glassbox binary
+        run: |
+          mkdir -p bin
+          go build -o bin/glassbox ./cmd/glassbox
+
+      # Build the Rust simulator binary (release profile for deterministic output).
+      - name: Build simulator binary
+        run: |
+          cd simulator
+          cargo build --release
+
+      # Upload both binaries so capture jobs can download them without re-building.
+      - name: Upload built binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: glassbox-bin-${{ github.run_id }}
+          path: |
+            bin/glassbox
+            simulator/target/release/glassbox-sim
+          retention-days: 1
+          if-no-files-found: warn
+
+  # ─── 2. depcompat Go package tests ────────────────────────────────────────
+  depcompat-unit:
+    name: depcompat package tests
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@v1.12.0
+
+      - name: Run depcompat unit tests
+        run: |
+          mkdir -p ci-artifacts/depcompat-unit
+          gotestsum \
+            --format testname \
+            --junitfile ci-artifacts/depcompat-unit/junit.xml \
+            --jsonfile ci-artifacts/depcompat-unit/test-output.json \
+            -- -race -v ./internal/depcompat/...
+
+      - name: Annotate test results
+        uses: mikepenz/action-junit-report@v4
+        if: always()
+        with:
+          report_paths: ci-artifacts/depcompat-unit/junit.xml
+          check_name: "depcompat unit tests"
+          fail_on_failure: true
+
+  # ─── 3. Matrix capture + compare ──────────────────────────────────────────
+  #
+  # Each matrix cell: one dependency group tested independently so failures
+  # are isolated and reports are still produced for passing groups.
+  compat-matrix:
+    name: Compat — ${{ matrix.dep_group }}
+    runs-on: ubuntu-latest
+    needs: build
+    # Run even if build produced no simulator binary (capture falls back to
+    # stub mode which still exercises the comparison + report pipeline).
+    if: always()
+
+    strategy:
+      fail-fast: false
+      matrix:
+        dep_group:
+          - stellar-sdk
+          - soroban-host
+          - crypto
+          - rpc-client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Restore binaries uploaded by the build job.
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: glassbox-bin-${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Restore binary permissions
+        run: |
+          chmod +x bin/glassbox 2>/dev/null || true
+          chmod +x simulator/target/release/glassbox-sim 2>/dev/null || true
+
+      # Filter by the optional dep_group input when triggered via workflow_dispatch.
+      # If the manual input doesn't match this matrix cell, skip capture/compare
+      # but still upload an empty report so the summary job has all cells.
+      - name: Check if this group is in scope
+        id: scope_check
+        run: |
+          INPUT_GROUP="${{ github.event.inputs.dep_group }}"
+          MATRIX_GROUP="${{ matrix.dep_group }}"
+          if [[ -n "${INPUT_GROUP}" && "${INPUT_GROUP}" != "${MATRIX_GROUP}" ]]; then
+            echo "in_scope=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "in_scope=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Capture ────────────────────────────────────────────────────────────
+      - name: Capture harness outputs — ${{ matrix.dep_group }}
+        id: capture
+        if: steps.scope_check.outputs.in_scope == 'true'
+        env:
+          GLASSBOX_BIN: ${{ github.workspace }}/bin/glassbox
+          GLASSBOX_SIM_PATH: ${{ github.workspace }}/simulator/target/release/glassbox-sim
+          DEP_COMPAT_OUTPUT: ${{ github.workspace }}/compat-work/${{ matrix.dep_group }}
+        run: |
+          mkdir -p compat-work/${{ matrix.dep_group }}
+          VERBOSE_FLAG=""
+          if [[ "${{ github.event.inputs.verbose }}" == "true" ]]; then
+            VERBOSE_FLAG="--verbose"
+          fi
+          bash scripts/dep-compat-capture.sh \
+            --dep-group "${{ matrix.dep_group }}" \
+            --output-dir "compat-work/${{ matrix.dep_group }}" \
+            ${VERBOSE_FLAG}
+        # Continue so the compare step always runs and produces a report.
+        continue-on-error: true
+
+      # ── Compare ────────────────────────────────────────────────────────────
+      - name: Compare against golden baselines — ${{ matrix.dep_group }}
+        id: compare
+        if: steps.scope_check.outputs.in_scope == 'true'
+        run: |
+          mkdir -p compat-work/${{ matrix.dep_group }}
+          VERBOSE_FLAG=""
+          if [[ "${{ github.event.inputs.verbose }}" == "true" ]]; then
+            VERBOSE_FLAG="--verbose"
+          fi
+          bash scripts/dep-compat-compare.sh \
+            --captured-dir "compat-work/${{ matrix.dep_group }}" \
+            --golden-dir   "${GOLDEN_DIR}" \
+            --dep-group    "${{ matrix.dep_group }}" \
+            --report-file  "compat-work/${{ matrix.dep_group }}/compat-report.json" \
+            --summary-file "compat-work/${{ matrix.dep_group }}/compat-summary.md" \
+            --fail-on-unexpected \
+            --fail-on-error \
+            ${VERBOSE_FLAG}
+        # Continue so the report is always uploaded.
+        continue-on-error: true
+
+      # ── Job summary ────────────────────────────────────────────────────────
+      - name: Write job summary — ${{ matrix.dep_group }}
+        if: steps.scope_check.outputs.in_scope == 'true' && always()
+        run: |
+          SUMMARY_FILE="compat-work/${{ matrix.dep_group }}/compat-summary.md"
+          if [[ -f "${SUMMARY_FILE}" ]]; then
+            cat "${SUMMARY_FILE}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No summary produced for ${{ matrix.dep_group }}." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # ── Artifact upload ────────────────────────────────────────────────────
+      # Always upload the report bundle, even on failure, so reviewers can
+      # inspect diffs. The bundle is a read-only review artifact: nothing in
+      # this job publishes it anywhere or uses it to modify the repository.
+      - name: Upload compat report — ${{ matrix.dep_group }}
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Name is deterministic so humans can locate the right bundle.
+          name: compat-report-${{ matrix.dep_group }}-${{ github.run_id }}
+          path: compat-work/${{ matrix.dep_group }}/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: warn
+
+      # Propagate the compare exit code after the artifact upload.
+      - name: Propagate compare result — ${{ matrix.dep_group }}
+        if: steps.scope_check.outputs.in_scope == 'true'
+        run: |
+          if [[ "${{ steps.compare.outcome }}" == "failure" ]]; then
+            echo "::error::Unexpected compatibility diffs detected for ${{ matrix.dep_group }}."
+            echo "Download the compat-report-${{ matrix.dep_group }}-${{ github.run_id }} artifact to review."
+            exit 1
+          fi
+
+  # ─── 4. Aggregate report ───────────────────────────────────────────────────
+  #
+  # Merges all per-group reports into a single run-level summary for
+  # the GitHub Actions job summary page.
+  compat-aggregate:
+    name: Aggregate compatibility report
+    runs-on: ubuntu-latest
+    needs: [depcompat-unit, compat-matrix]
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Download all per-group report bundles.
+      - name: Download all compat reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compat-report-*-${{ github.run_id }}
+          path: all-compat-reports
+        continue-on-error: true
+
+      # Merge reports and write a consolidated job summary.
+      - name: Generate consolidated summary
+        run: |
+          python3 - all-compat-reports "$GITHUB_STEP_SUMMARY" <<'PYEOF'
+          import json, os, sys, glob
+
+          reports_dir = sys.argv[1]
+          summary_out = sys.argv[2]
+
+          all_report_files = glob.glob(f"{reports_dir}/**/compat-report.json", recursive=True)
+
+          total = matched = expected = unexpected = errored = 0
+          group_rows = []
+
+          for f in sorted(all_report_files):
+              try:
+                  data = json.loads(open(f).read())
+                  s = data.get("summary", {})
+                  grp = data.get("dep_group", os.path.basename(os.path.dirname(f)))
+                  total       += s.get("total_outputs", 0)
+                  matched     += s.get("outputs_matched", 0)
+                  expected    += s.get("outputs_expected", 0)
+                  unexpected  += s.get("outputs_unexpected", 0)
+                  errored     += s.get("outputs_errored", 0)
+
+                  if s.get("has_unexpected_diffs") or s.get("has_errors"):
+                      status_icon = ":x: FAIL"
+                  elif s.get("outputs_expected", 0) > 0:
+                      status_icon = ":warning: EXPECTED"
+                  else:
+                      status_icon = ":white_check_mark: PASS"
+
+                  group_rows.append((grp, s.get("total_outputs",0), s.get("outputs_matched",0),
+                                     s.get("outputs_expected",0), s.get("outputs_unexpected",0),
+                                     status_icon))
+              except Exception as e:
+                  group_rows.append((f, 0, 0, 0, 0, f":x: ERROR ({e})"))
+
+          badge = (
+              "![FAIL](https://img.shields.io/badge/compat-FAIL-red)"
+              if unexpected > 0 or errored > 0
+              else ("![WARN](https://img.shields.io/badge/compat-WARN-yellow)"
+                    if expected > 0
+                    else "![PASS](https://img.shields.io/badge/compat-PASS-brightgreen)")
+          )
+
+          lines = [
+              f"## Consolidated Dependency Compatibility Report {badge}",
+              "",
+              "### Overall Summary",
+              "",
+              "| Metric | Count |",
+              "|---|---|",
+              f"| Total outputs tested | {total} |",
+              f"| Matched (no diff) | {matched} |",
+              f"| Expected diffs | {expected} |",
+              f"| Unexpected diffs | **{unexpected}** |",
+              f"| Errors | **{errored}** |",
+              "",
+              "### Per-Group Results",
+              "",
+              "| Dep Group | Tested | Matched | Expected | Unexpected | Status |",
+              "|---|---|---|---|---|---|",
+          ]
+          for (grp, t, m, e, u, st) in group_rows:
+              lines.append(f"| `{grp}` | {t} | {m} | {e} | {u} | {st} |")
+
+          lines += [
+              "",
+              "---",
+              "> **Artifact policy**: Compat report bundles are uploaded for human review only.",
+              "> No dependency updates are merged or published automatically by this workflow.",
+              "> To update golden baselines after an intentional SDK/host/crypto change, run:",
+              "> ```bash",
+              "> scripts/dep-compat-capture.sh --update-golden",
+              "> ```",
+              "> Review the diff in `internal/depcompat/testdata/golden/` and open a PR.",
+          ]
+
+          with open(summary_out, "a") as f:
+              f.write("\n".join(lines) + "\n")
+
+          print("Consolidated summary written.")
+          print(f"  Total: {total}, Matched: {matched}, Expected: {expected}, Unexpected: {unexpected}, Errors: {errored}")
+          PYEOF
+
+      # Upload the merged report bundle for archival purposes.
+      - name: Upload consolidated reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-report-all-${{ github.run_id }}
+          path: all-compat-reports/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: warn
+
+  # ─── 5. Gate ───────────────────────────────────────────────────────────────
+  compat-gate:
+    name: Compatibility gate
+    runs-on: ubuntu-latest
+    needs: [depcompat-unit, compat-matrix, compat-aggregate]
+    if: always()
+
+    steps:
+      - name: Evaluate gate
+        run: |
+          unit_result="${{ needs.depcompat-unit.result }}"
+          matrix_result="${{ needs.compat-matrix.result }}"
+
+          echo "depcompat-unit : ${unit_result}"
+          echo "compat-matrix  : ${matrix_result}"
+
+          failed=0
+          for r in "${unit_result}" "${matrix_result}"; do
+            if [[ "${r}" != "success" && "${r}" != "skipped" ]]; then
+              echo "::error::Job result '${r}' indicates a failure or unexpected diff."
+              failed=1
+            fi
+          done
+
+          if [[ "${failed}" -eq 1 ]]; then
+            echo ""
+            echo "One or more compatibility checks failed."
+            echo "Download the compat-report-all-${{ github.run_id }} artifact for details."
+            echo ""
+            echo "If the diffs are expected (new SDK version, schema addition):"
+            echo "  1. Run: scripts/dep-compat-capture.sh --update-golden"
+            echo "  2. Review: git diff internal/depcompat/testdata/golden/"
+            echo "  3. Open a PR with the updated baselines."
+            exit 1
+          fi
+
+          echo "All compatibility checks passed."

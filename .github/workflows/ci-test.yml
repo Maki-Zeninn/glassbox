@@ -68,22 +68,33 @@ jobs:
 
       # Run tests and emit a JUnit-compatible report for GitHub Actions.
       # gotestsum produces machine-readable output; fall back to go test if
-      # gotestsum is not cached.
+      # gotestsum fails to build (e.g. transitive-dep incompatibility).
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@v1.12.0
+        continue-on-error: true
 
       - name: Run unit tests
         id: run_tests
+        shell: bash
         # Write JSON output for downstream processing and JUnit XML for the
         # test report annotation step.
         run: |
           mkdir -p ci-artifacts/unit
-          gotestsum \
-            --format testname \
-            --junitfile ci-artifacts/unit/junit.xml \
-            --jsonfile ci-artifacts/unit/test-output.json \
-            -- -race -coverprofile=ci-artifacts/unit/coverage.out \
-            ./internal/...
+          if gotestsum --version >/dev/null 2>&1; then
+            gotestsum \
+              --format testname \
+              --junitfile ci-artifacts/unit/junit.xml \
+              --jsonfile ci-artifacts/unit/test-output.json \
+              -- -race -coverprofile=ci-artifacts/unit/coverage.out \
+              ./internal/...
+          else
+            echo "gotestsum unavailable, falling back to go test"
+            go test -race -coverprofile=ci-artifacts/unit/coverage.out ./internal/... \
+              2>&1 | tee ci-artifacts/unit/test-output.log
+            FALLBACK_EXIT=${PIPESTATUS[0]}
+            echo '[]' > ci-artifacts/unit/test-output.json
+            exit ${FALLBACK_EXIT}
+          fi
         # Continue so the artifact upload step always runs even on failure.
         continue-on-error: true
 
@@ -152,22 +163,33 @@ jobs:
 
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@v1.12.0
+        continue-on-error: true
 
       - name: Build glassbox binary
         run: go build -o bin/glassbox ./cmd/glassbox
 
       - name: Run integration tests
         id: run_integration
+        shell: bash
         env:
           GLASSBOX_BINARY: ${{ github.workspace }}/bin/glassbox
         run: |
           mkdir -p ci-artifacts/integration
-          gotestsum \
-            --format testname \
-            --junitfile ci-artifacts/integration/junit.xml \
-            --jsonfile ci-artifacts/integration/test-output.json \
-            -- -v -timeout 120s \
-            ./integration/...
+          if gotestsum --version >/dev/null 2>&1; then
+            gotestsum \
+              --format testname \
+              --junitfile ci-artifacts/integration/junit.xml \
+              --jsonfile ci-artifacts/integration/test-output.json \
+              -- -v -timeout 120s \
+              ./integration/...
+          else
+            echo "gotestsum unavailable, falling back to go test"
+            go test -v -timeout 120s ./integration/... \
+              2>&1 | tee ci-artifacts/integration/test-output.log
+            FALLBACK_EXIT=${PIPESTATUS[0]}
+            echo '[]' > ci-artifacts/integration/test-output.json
+            exit ${FALLBACK_EXIT}
+          fi
         continue-on-error: true
 
       - name: Annotate integration test results
@@ -219,6 +241,37 @@ jobs:
         run: exit 1
 
   # ───────────────────────────────────────────────────────────────────────────
+  # Horizon bit-exact verification (Issue #1116) — runs when PR labelled
+  # "integration" or on push (non-PR). Skips corpus live calls when env unset;
+  # here we set the testnet Horizon URL for labelled PRs.
+  # ───────────────────────────────────────────────────────────────────────────
+  horizon-verify:
+    name: Horizon bit-exact verify
+    runs-on: ubuntu-latest
+    needs: go-unit
+    if: >
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'integration')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run Horizon verifier integration tests
+        env:
+          GLASSBOX_TEST_HORIZON_URL: https://horizon-testnet.stellar.org
+        run: |
+          go test -tags=integration -v -timeout 180s \
+            -run 'TestHorizonVerifier_|TestCompareResourceUsage_' \
+            ./internal/e2eharness/
+
+  # ───────────────────────────────────────────────────────────────────────────
   # TypeScript / Node tests
   # ───────────────────────────────────────────────────────────────────────────
   ts-test:
@@ -237,6 +290,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --prefer-offline
+
+      - name: Install jest-junit reporter
+        run: npm install --no-save jest-junit
 
       - name: Run TypeScript tests
         id: run_ts
@@ -318,17 +374,28 @@ jobs:
 
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@v1.12.0
+        continue-on-error: true
 
       - name: Run regression tests
         id: run_regression
+        shell: bash
         run: |
           mkdir -p ci-artifacts/regression
-          gotestsum \
-            --format testname \
-            --junitfile ci-artifacts/regression/junit.xml \
-            --jsonfile ci-artifacts/regression/test-output.json \
-            -- -v -run TestRegression \
-            ./internal/cmd/... ./integration/...
+          if gotestsum --version >/dev/null 2>&1; then
+            gotestsum \
+              --format testname \
+              --junitfile ci-artifacts/regression/junit.xml \
+              --jsonfile ci-artifacts/regression/test-output.json \
+              -- -v -run TestRegression \
+              ./internal/cmd/... ./integration/...
+          else
+            echo "gotestsum unavailable, falling back to go test"
+            go test -v -run TestRegression ./internal/cmd/... ./integration/... \
+              2>&1 | tee ci-artifacts/regression/test-output.log
+            FALLBACK_EXIT=${PIPESTATUS[0]}
+            echo '[]' > ci-artifacts/regression/test-output.json
+            exit ${FALLBACK_EXIT}
+          fi
         continue-on-error: true
 
       - name: Annotate regression test results
@@ -367,12 +434,36 @@ jobs:
         run: exit 1
 
   # ───────────────────────────────────────────────────────────────────────────
+  # Byte-stable bindings verification
+  # ───────────────────────────────────────────────────────────────────────────
+  bindings-byte-stable:
+    name: Byte-stable bindings verification
+    runs-on: ubuntu-latest
+    needs: go-unit
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build glassbox binary
+        run: go build -o bin/glassbox ./cmd/glassbox
+
+      - name: Run byte-stable bindings test
+        run: go test -v -run TestByteStableGeneration ./internal/bindings/...
+
+  # ───────────────────────────────────────────────────────────────────────────
   # Summary job: all gates must pass before merge is allowed
   # ───────────────────────────────────────────────────────────────────────────
   ci-gate:
     name: CI gate (all tests passed)
     runs-on: ubuntu-latest
-    needs: [ go-unit, go-integration, ts-test, go-regression ]
+    needs: [ go-unit, go-integration, ts-test, go-regression, bindings-byte-stable ]
     if: always()
 
     steps:
@@ -383,6 +474,7 @@ jobs:
             "${{ needs.go-integration.result }}"
             "${{ needs.ts-test.result }}"
             "${{ needs.go-regression.result }}"
+            "${{ needs.bindings-byte-stable.result }}"
           )
           failed=0
           for r in "${results[@]}"; do

@@ -110,3 +110,52 @@ max_trace_depth = 50
 # GLASSBOX_MOCK_HSM_LATENCY_MS=50
 # GLASSBOX_MOCK_HSM_FAILURE_RATE=0.1
 # GLASSBOX_MOCK_HSM_SEED=0000000000000000000000000000000000000000000000000000000000000001
+
+# ── Audit Verification Trust Policy ─────────────────────────────────────────
+#
+# These settings control how certificate and attestation chains are evaluated
+# during `glassbox audit:verify`. They are intentionally separate from
+# cryptographic verification (hash + signature), so that changing a policy
+# only affects the policy outcome, not the underlying crypto result.
+#
+# All settings below are OPTIONAL. When omitted, the defaults produce
+# a "cryptographic verification only" mode that accepts any issuer,
+# does not enforce validity windows, and applies no revocation checks.
+# This default behaviour is documented and safe for offline audit review.
+#
+# [audit.trust_policy]
+#
+# trust_roots: List of PEM file paths or inline PEM strings for root CA
+# certificates that are considered trusted anchors.
+# Default: [] (no trust root check; all certificate chains are accepted).
+# trust_roots = ["/etc/glassbox/trusted-ca.pem"]
+#
+# allowed_issuers: Allowlist of issuer Distinguished Name substrings.
+# Certificates whose issuer does not match any entry are rejected with an
+# explicit "Untrusted issuer" message identifying the offending DN.
+# Default: [] (all issuers accepted).
+# allowed_issuers = ["CN=My HSM Attestation CA", "OU=Security Signing"]
+#
+# check_validity: When true, enforces the certificate notBefore/notAfter
+# validity window. The reference time is the log's own timestamp so that
+# historical logs are evaluated at the time of signing, not today.
+# Default: false.
+# check_validity = false
+#
+# revoked_certificates: List of revoked certificate serial numbers (hex).
+# Used in combination with revocation_policy.
+# Default: [] (no revocation check).
+# revoked_certificates = ["deadbeef01", "cafebabe02"]
+#
+# revocation_policy: Controls how revocation failures are handled.
+#   "strict" – certificates in revoked_certificates fail the policy (default
+#               when revoked_certificates is non-empty).
+#   "none"   – revocation list is informational; failures are reported but do
+#               not change the policy outcome.
+# Default: "strict" (when revoked_certificates is set).
+# revocation_policy = "strict"
+#
+# These settings can also be passed directly to `glassbox audit:verify` as
+# CLI flags (--trust-roots, --allowed-issuers, --check-validity,
+# --revoked-certs, --revocation-mode, --policy-config) which always take
+# precedence over file configuration.

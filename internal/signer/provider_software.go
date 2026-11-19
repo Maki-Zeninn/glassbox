@@ -74,7 +74,7 @@ func (p *SoftwareProvider) validatePEMContent(pemText string) error {
 	// Detect other PEM types that are not PKCS#8 and give a targeted hint.
 	if strings.Contains(pemText, "BEGIN OPENSSH PRIVATE KEY") {
 		return &Error{
-			Op:  "software",
+			Op: "software",
 			Msg: "the key is in OpenSSH format; Glassbox requires PKCS#8 PEM format\n" +
 				"  Fix: convert with: openssl pkey -in key.pem -out key_pkcs8.pem\n" +
 				"  Or generate a new key: openssl genpkey -algorithm ed25519 -out key.pem",
@@ -82,14 +82,14 @@ func (p *SoftwareProvider) validatePEMContent(pemText string) error {
 	}
 	if strings.Contains(pemText, "BEGIN EC PRIVATE KEY") {
 		return &Error{
-			Op:  "software",
+			Op: "software",
 			Msg: "the key is in SEC1 (EC PRIVATE KEY) format; Glassbox requires PKCS#8 PEM format\n" +
 				"  Fix: convert with: openssl pkcs8 -topk8 -nocrypt -in key.pem -out key_pkcs8.pem",
 		}
 	}
 	if strings.Contains(pemText, "BEGIN RSA PRIVATE KEY") {
 		return &Error{
-			Op:  "software",
+			Op: "software",
 			Msg: "the key is an RSA key; Glassbox requires an Ed25519 PKCS#8 PEM private key\n" +
 				"  Fix: generate a new Ed25519 key: openssl genpkey -algorithm ed25519 -out key.pem",
 		}
@@ -98,7 +98,7 @@ func (p *SoftwareProvider) validatePEMContent(pemText string) error {
 	// Attempt full parse to catch garbled PEM, wrong algorithm, etc.
 	if _, err := NewInMemorySignerFromPEM(pemText); err != nil {
 		return &Error{
-			Op:  "software",
+			Op: "software",
 			Msg: fmt.Sprintf("invalid Ed25519 private key: %v\n"+
 				"  Expected: a PKCS#8 PEM file starting with '-----BEGIN PRIVATE KEY-----'\n"+
 				"  Generate: openssl genpkey -algorithm ed25519 -out key.pem", err),
@@ -113,7 +113,7 @@ func (p *SoftwareProvider) validateHexContent(hexKey string) error {
 	raw, err := hex.DecodeString(hexKey)
 	if err != nil {
 		return &Error{
-			Op:  "software",
+			Op: "software",
 			Msg: fmt.Sprintf("GLASSBOX_SOFTWARE_PRIVATE_KEY_HEX is not valid hexadecimal: %v\n"+
 				"  Expected: a 64-character hex string (32-byte seed) or 128-character hex string (64-byte full key)\n"+
 				"  Fix: re-export the key or set GLASSBOX_AUDIT_PRIVATE_KEY_PEM with a PEM file instead", err),

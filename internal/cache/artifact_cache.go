@@ -63,6 +63,9 @@ func NewArtifactCache(manager *Manager, ttl time.Duration) *ArtifactCache {
 
 // Get retrieves a cached artifact by key and type
 func (c *ArtifactCache) Get(key string, artifactType ArtifactType, network string) (*CachedArtifact, bool, error) {
+	if key == "" {
+		return nil, false, fmt.Errorf("artifact key must not be empty")
+	}
 	_, err := c.manager.GetCacheDir()
 	if err != nil {
 		return nil, false, err
@@ -94,6 +97,15 @@ func (c *ArtifactCache) Get(key string, artifactType ArtifactType, network strin
 
 // Set stores an artifact in the cache
 func (c *ArtifactCache) Set(artifact *CachedArtifact) error {
+	if artifact == nil {
+		return fmt.Errorf("artifact must not be nil")
+	}
+	if artifact.Key == "" {
+		return fmt.Errorf("artifact key must not be empty")
+	}
+	if artifact.Type == "" {
+		return fmt.Errorf("artifact type must not be empty")
+	}
 	_, err := c.manager.GetCacheDir()
 	if err != nil {
 		return err
@@ -136,6 +148,9 @@ func (c *ArtifactCache) VerifyIntegrity(artifact *CachedArtifact) bool {
 
 // Invalidate removes a specific cached artifact
 func (c *ArtifactCache) Invalidate(key string, artifactType ArtifactType, network string) error {
+	if key == "" {
+		return fmt.Errorf("artifact key must not be empty")
+	}
 	filePath := c.artifactPath(key, artifactType, network)
 	if err := os.Remove(filePath); err != nil {
 		if os.IsNotExist(err) {

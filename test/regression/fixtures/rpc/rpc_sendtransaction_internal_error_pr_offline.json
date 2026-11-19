@@ -1,0 +1,12 @@
+{
+  "_comment": "Deterministic offline fixture: sendTransaction returns a JSON-RPC internal error (-32603). Verifies that the error normalizer maps code -32603 to the 'rpc_protocol' category and produces a safe user-facing message that does not echo raw server content.",
+  "_failure_class": "rpc-error-normalization",
+  "_issue": "offline",
+  "_test": "TestRegression_RPC_SendTransaction_InternalError_NormalizedOffline",
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32603,
+    "message": "Internal error"
+  }
+}

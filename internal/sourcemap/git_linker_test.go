@@ -5,6 +5,7 @@ package sourcemap
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -267,4 +268,48 @@ func TestGitLinker_SSHRemote(t *testing.T) {
 	if !strings.Contains(url, "stellar/soroban-examples") {
 		t.Errorf("URL %q should contain stellar/soroban-examples", url)
 	}
+}
+
+func TestNewGitLinkerWithRevision_UsesManifestCommitOnDetachedHead(t *testing.T) {
+	root := t.TempDir()
+	for _, args := range [][]string{{"init"}, {"config", "user.email", "test@example.invalid"}, {"config", "user.name", "Test"}, {"remote", "add", "origin", "git@github.com:example/replay.git"}} {
+		cmd := exec.Command("git", args...); cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil { t.Fatalf("git %v: %v (%s)", args, err, out) }
+	}
+	file := filepath.Join(root, "src", "lib.rs")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(file, []byte("fn x() {}"), 0o644); err != nil { t.Fatal(err) }
+	cmd := exec.Command("git", "add", "."); cmd.Dir = root; if err := cmd.Run(); err != nil { t.Fatal(err) }
+	cmd = exec.Command("git", "commit", "-m", "initial"); cmd.Dir = root; if err := cmd.Run(); err != nil { t.Fatal(err) }
+	cmd = exec.Command("git", "rev-parse", "HEAD"); cmd.Dir = root; shaBytes, err := cmd.Output(); if err != nil { t.Fatal(err) }
+	sha := strings.TrimSpace(string(shaBytes))
+	cmd = exec.Command("git", "checkout", "--detach", "HEAD"); cmd.Dir = root; if err := cmd.Run(); err != nil { t.Fatal(err) }
+
+	linker, err := NewGitLinkerWithRevision(file, RevisionOptions{ManifestRevision: sha})
+	if err != nil { t.Fatal(err) }
+	got, err := linker.GitHubURL(file)
+	if err != nil { t.Fatal(err) }
+	want := "https://github.com/example/replay/blob/" + sha + "/src/lib.rs"
+	if got != want { t.Fatalf("URL = %q, want %q", got, want) }
+	if linker.Provenance().Source != "manifest" { t.Fatalf("provenance = %#v", linker.Provenance()) }
+}
+
+func TestNewGitLinker_RejectsDirtyAndAlternateRemote(t *testing.T) {
+	root := makeGitRepo(t, "https://gitlab.com/example/replay.git")
+	file := filepath.Join(root, "src", "lib.rs")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(file, nil, 0o644); err != nil { t.Fatal(err) }
+	if _, err := NewGitLinker(file); err == nil { t.Fatal("expected alternate remote rejection") }
+}
+
+func TestGitLinker_EscapesPathAndRejectsTraversal(t *testing.T) {
+	root := makeGitRepo(t, "https://github.com/example/replay.git")
+	linker := &GitLinker{repoRoot: root, remoteURL: "https://github.com/example/replay.git", defaultBranch: "main"}
+	file := filepath.Join(root, "src", "space name.rs")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(file, nil, 0o644); err != nil { t.Fatal(err) }
+	got, err := linker.GitHubURL(file)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(got, "space%20name.rs") { t.Fatalf("path was not escaped: %s", got) }
+	if _, err := linker.NormalizeSourcePath("../secret.rs"); err == nil { t.Fatal("expected traversal rejection") }
 }

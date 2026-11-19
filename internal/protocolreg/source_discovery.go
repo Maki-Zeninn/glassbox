@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -121,9 +122,14 @@ func discoverViaEnv() (string, error) {
 	return validateDiscoveredPath(raw, "GLASSBOX_BIN")
 }
 
+// maxDiscoveredPathLength is the maximum acceptable path length for discovered
+// executables. This matches maxPathLength in registration.go for consistency.
+const maxDiscoveredPathLength = 255
+
 // validateDiscoveredPath checks that path is non-empty, free of null bytes,
-// and points to an existing regular file. It resolves symlinks so the
-// registered handler always points to the real binary.
+// within length limits, and points to an existing regular file. On Unix it
+// also checks that the file has execute permission. It resolves symlinks so
+// the registered handler always points to the real binary.
 func validateDiscoveredPath(raw, source string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -133,9 +139,27 @@ func validateDiscoveredPath(raw, source string) (string, error) {
 		return "", fmt.Errorf("%s returned a path with null bytes: %q", source, raw)
 	}
 
+	// Reject overly long paths that would break registration artefacts.
+	if len(raw) > maxDiscoveredPathLength {
+		return "", fmt.Errorf(
+			"%s returned a path that is too long (%d characters, maximum %d)\n"+
+				"  Fix: move the glassbox binary to a shorter path (e.g., ~/.local/bin/glassbox) or create a symlink",
+			source, len(raw), maxDiscoveredPathLength,
+		)
+	}
+
 	abs, err := filepath.Abs(raw)
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path for %q: %w", raw, err)
+	}
+
+	// Re-check length after abs resolution since the absolute form may be longer.
+	if len(abs) > maxDiscoveredPathLength {
+		return "", fmt.Errorf(
+			"%s resolved to a path that is too long (%d characters, maximum %d)\n"+
+				"  Fix: move the glassbox binary to a shorter path (e.g., ~/.local/bin/glassbox) or create a symlink",
+			source, len(abs), maxDiscoveredPathLength,
+		)
 	}
 
 	info, err := os.Stat(abs)
@@ -146,10 +170,33 @@ func validateDiscoveredPath(raw, source string) (string, error) {
 		return "", fmt.Errorf("%q from %s is a directory, not a binary", abs, source)
 	}
 
+	// On Unix, verify the file has execute permission so the registration
+	// artefacts will actually be able to invoke the binary.
+	if runtime.GOOS != "windows" {
+		mode := info.Mode()
+		if mode&0o111 == 0 {
+			return "", fmt.Errorf(
+				"%q from %s is not executable (permissions: %04o)\n"+
+					"  Fix: run 'chmod +x %s' to make the binary executable",
+				abs, source, mode&0o777, abs,
+			)
+		}
+	}
+
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		// Symlink evaluation failure is non-fatal — use the absolute path.
 		return abs, nil
 	}
+
+	// Final path length check after symlink resolution.
+	if len(resolved) > maxDiscoveredPathLength {
+		return "", fmt.Errorf(
+			"%s resolved symlink to a path that is too long (%d characters, maximum %d)\n"+
+				"  Fix: move the glassbox binary to a shorter path or update the symlink",
+			source, len(resolved), maxDiscoveredPathLength,
+		)
+	}
+
 	return resolved, nil
 }

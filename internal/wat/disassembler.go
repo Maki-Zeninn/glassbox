@@ -21,16 +21,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/dotandev/glassbox/internal/wasmvalidate"
 )
 
 // =============================================================================
 // WASM constants
 // =============================================================================
-
-// WASM magic number and version.
-var wasmMagic = []byte{0x00, 0x61, 0x73, 0x6d}
-
-const wasmVersion = 1
 
 // WASM section IDs.
 const (
@@ -127,18 +124,22 @@ func NewDisassembler(wasmBytes []byte) *Disassembler {
 	return d
 }
 
-// IsValidWasm checks whether the data starts with the WASM magic number.
+// IsValidWasm checks whether the data starts with the WASM magic number and
+// has a well-formed, bounds-checked section table. Section-table corruption
+// (a lying or truncated size) is rejected here so the disassembly loops
+// below don't have to guess whether "section not found" means "absent" or
+// "the file is corrupt." Policy limits (module size, section count, etc.)
+// are intentionally not enforced here — this is a best-effort fallback
+// disassembler for debug-assistance, not the primary validation gate (that's
+// internal/wasmvalidate, run earlier in the source-mapping pipeline).
 func (d *Disassembler) IsValidWasm() bool {
-	if len(d.data) < 8 {
-		return false
-	}
-	for i := 0; i < 4; i++ {
-		if d.data[i] != wasmMagic[i] {
+	_, issues := wasmvalidate.Sections(d.data, wasmvalidate.DefaultLimits())
+	for _, iss := range issues {
+		if iss.Class == wasmvalidate.ClassStructural {
 			return false
 		}
 	}
-	version := binary.LittleEndian.Uint32(d.data[4:8])
-	return version == wasmVersion
+	return true
 }
 
 // DisassembleAt decodes instructions around the given byte offset,

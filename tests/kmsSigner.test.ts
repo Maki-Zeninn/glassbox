@@ -60,29 +60,47 @@ const KMS_MODULE_ID = '@aws-sdk/client-kms';
 const _require: any = eval('require');
 
 /**
- * Injects a mock KMS module into the require cache so that KmsSigner's lazy
- * eval('require')('@aws-sdk/client-kms') resolves to our mock without the real
- * SDK being installed.
+ * Injects a mock KMS module so that KmsSigner's lazy
+ * eval('require')('@aws-sdk/client-kms') resolves to our mock instead
+ * of the real (installed) SDK.
+ *
+ * Implementation note: Node's require cache is keyed by the *resolved
+ * absolute path*, not by the specifier string. The previous
+ * implementation used `_require.cache[KMS_MODULE_ID]` where
+ * `KMS_MODULE_ID = '@aws-sdk/client-kms'`, which was a silent no-op —
+ * the real module still resolved through normal resolution. We now
+ * resolve the specifier first and inject at the resolved key so the
+ * mock actually wins.
+ *
+ * Because the SDK is an optional peer (see `optionalDependencies` in
+ * package.json), this test requires `@aws-sdk/client-kms` to be
+ * installed (otherwise `require.resolve` throws). CI must keep the
+ * optional dep installed before running this suite.
  */
 function injectKmsMock(mock: ReturnType<typeof buildKmsMock>): void {
-  const mod = {
-    KMSClient: mock.KMSClient,
-    SignCommand: mock.SignCommand,
-    GetPublicKeyCommand: mock.GetPublicKeyCommand,
-  };
-  _require.cache[KMS_MODULE_ID] = {
-    id: KMS_MODULE_ID,
-    filename: KMS_MODULE_ID,
+  const resolved = _require.resolve('@aws-sdk/client-kms');
+  _require.cache[resolved] = {
+    id: resolved,
+    filename: resolved,
     loaded: true,
     parent: null as any,
     children: [],
-    exports: mod,
     paths: [],
+    exports: {
+      KMSClient: mock.KMSClient,
+      SignCommand: mock.SignCommand,
+      GetPublicKeyCommand: mock.GetPublicKeyCommand,
+    },
   } as any;
 }
 
 function removeKmsCacheEntry(): void {
-  delete _require.cache[KMS_MODULE_ID];
+  try {
+    const resolved = _require.resolve('@aws-sdk/client-kms');
+    delete _require.cache[resolved];
+  } catch {
+    // SDK not installed; nothing to evict.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +237,7 @@ describe('KmsSigner', () => {
 
     it('throws when KMS response contains no Signature field', async () => {
       const mock = buildKmsMock();
-      mock.send.mockResolvedValueOnce({});
+      mock.send.mockResolvedValueOnce({} as any);
       injectKmsMock(mock);
 
       const signer = new KmsSigner();
@@ -281,7 +299,7 @@ describe('KmsSigner', () => {
 
     it('throws when KMS response contains no PublicKey field', async () => {
       const mock = buildKmsMock();
-      mock.send.mockResolvedValueOnce({});
+      mock.send.mockResolvedValueOnce({} as any);
       injectKmsMock(mock);
 
       const signer = new KmsSigner();
@@ -346,7 +364,7 @@ describe('createAuditSigner – kms provider', () => {
 
   it('throws for an unknown provider string', () => {
     expect(() => createAuditSigner({ hsmProvider: 'vault' })).toThrow(
-      'unknown signing provider'
+      'unknown provider'
     );
   });
 });

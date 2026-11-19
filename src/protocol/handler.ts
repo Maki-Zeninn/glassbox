@@ -14,6 +14,15 @@ interface HandlerConfig {
         maxInvocations: number;
         windowMs: number;
     };
+    /**
+     * When true, unsigned URIs (no `signed-payload` param) are rejected.
+     * When false (default), unsigned URIs retain legacy compatibility.
+     */
+    requireSignedPayload?: boolean;
+    /** If set, only signed payloads from these issuers are accepted. */
+    allowedIssuers?: string[];
+    /** If set, the scope array in the signed payload must include one of these. */
+    requiredScope?: string[];
 }
 
 /**
@@ -78,16 +87,63 @@ export class ProtocolHandler {
         // 1. Rate limiting based on the raw URI (prevent spamming)
         this.checkRateLimit(parsed.raw);
 
-        // 2. Signature verification if a secret key is provided
-        if (this.config.secret && parsed.signature) {
-            const isValid = this.parser.validateSignature(parsed, this.config.secret);
+        // 2. Signed-payload validation (tamper detection, expiry, issuer, scope)
+        if (parsed.signedPayload && parsed.signedPayloadEncoded) {
+            const sp = parsed.signedPayload;
 
+            // 2a. Verify HMAC signature over the encoded payload
+            if (this.config.secret) {
+                if (!parsed.signature) {
+                    throw new Error('Security verification failed: Signed payload requires a signature');
+                }
+                const sigValid = this.parser.validateSignedPayloadSignature(
+                    parsed.signedPayloadEncoded,
+                    parsed.signature,
+                    this.config.secret,
+                );
+                if (!sigValid) {
+                    throw new Error('Security verification failed: Signed payload signature is invalid');
+                }
+            }
+
+            // 2b. Check expiry — reject expired links without side effects
+            const nowSec = Math.floor(Date.now() / 1000);
+            if (sp.exp <= nowSec) {
+                throw new Error('Security verification failed: Signed payload has expired');
+            }
+
+            // 2c. Issuer allowlist
+            if (this.config.allowedIssuers && !this.config.allowedIssuers.includes(sp.iss)) {
+                throw new Error(`Security verification failed: Unauthorized issuer '${sp.iss}'`);
+            }
+
+            // 2d. Scope check
+            const required = this.config.requiredScope ?? ['debug'];
+            const hasScope = required.some(s => sp.scope.includes(s));
+            if (!hasScope) {
+                throw new Error(
+                    `Security verification failed: Scope '${sp.scope.join(',')}' does not satisfy required scope '${required.join(',')}'`,
+                );
+            }
+
+            // 2e. Payload must match URI parameters (tamper detection)
+            if (sp.txHash !== parsed.transactionHash || sp.network !== parsed.network) {
+                throw new Error('Security verification failed: Signed payload parameters do not match URI');
+            }
+
+        } else if (this.config.requireSignedPayload) {
+            throw new Error('Security verification failed: A signed payload is required for this endpoint');
+        }
+
+        // 3. Legacy HMAC signature verification (unsigned URIs with a bare signature param)
+        if (!parsed.signedPayload && this.config.secret && parsed.signature) {
+            const isValid = this.parser.validateSignature(parsed, this.config.secret);
             if (!isValid) {
                 throw new Error('Security verification failed: Invalid signature');
             }
         }
 
-        // 3. Origin validation if sources are restricted
+        // 4. Origin validation if sources are restricted
         if (this.config.trustedOrigins) {
             if (!parsed.source) {
                 throw new Error('Access denied: Authentication source is required');
@@ -96,8 +152,6 @@ export class ProtocolHandler {
                 throw new Error(`Access denied: Untrusted origin '${parsed.source}'`);
             }
         }
-
-        // Additional checks could be added here (e.g., blacklisted transaction hashes)
     }
 
     /**

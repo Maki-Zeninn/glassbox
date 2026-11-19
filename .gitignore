@@ -1,167 +1,59 @@
-# --- Compiled binaries/libraries ---
-/erst
-*.exe
-/simulator/target/
-node_modules/
-dist/
-bin/
+# PR documentation files (local only, not for version control)
+PR-*.md
+PR_*.md
+PR_ISSUE_*.md
 
-# --- OS/System Files ---
-.DS_Store
-.env
-.env.example
-.cursorrules
-Thumbs.db
-*.exe
-*.dll
-*.dylib
-*.so
-
-# --- Logs and Temporary Files ---
-*.log
-*.tmp
-*.bak
-*.swp
-simulator/check_output.txt
-test_results.txt
-test_output.txt
-.!*
-
-# --- Generated / snapshot / temp session artifacts ---
-*.gbx
-*.snap
-*.snap.json
-*_snapshot.json
-testdata/snapshots/
+# ── Test snapshots and generated test/lint artifacts ──────────────────────────
+# Jest and Vitest snapshots are generated, environment-dependent (absolute
+# paths, timings) and regenerate on demand. Committing them produces noisy diffs
+# and stale expectations, so they stay out of the repository. Rust test
+# snapshots under contracts/ are explicitly un-ignored, because Soroban
+# bindings are verified against them.
 **/__snapshots__/
-**/testsnap/
-**/*.testsnapshot
-*.flamegraph.html
-*.flamegraph.svg
-perf_*.json
-!internal/simulator/perf_baseline.json
-
-# --- Go specific ---
-/vendor/
-coverage.out
-coverage/
-
-# --- Rust specific ---
-**/*.rs.bk
-
-# --- Tools/Artifacts ---
-ishus.py
-create_phase9.py
-.gemini/
-.idea/
-.vscode/
-
-ishus.py
-# Temporary docs/notes
-*_SUMMARY.md
-PR_MESSAGE*.md
-IMPLEMENTATION_*.md
-DELIVERY_COMPLETE.md
-CHECKLIST.md
-MAINTAINER_NEXT_STEPS.md
-XDR_GENERATOR_PR_SUMMARY.md
-
-node_modules
-out
-# --- Documentation (User specific settings) ---
-# /external/
-# /*.md
-# !README.md
-# !CONTRIBUTING.md
-# !CHANGELOG.md
-lishus-t.md
-lishus.md
-PR_30*
-PR_279_trace_export_audit_chain_integrity.md
-PR_280_trace_export_schema_stability.md
-PR_281_trace_export_path_normalization_safety.md
-PR_278_hsm_signing_pkcs11_validation.md
-PR_283_improve_trace_export_reporting_summaries.md
-PR_284_improve_trace_export_regression_mock_harness.md
-PR_282_improve_trace_export_versioning_metadata.md
-PR_273_improve_trace_export_build_artifact_discovery.md
-
-# --- Kiro IDE workspace files ---
-.kiro/
-
-# --- Issue PR notes ---
-PR_270_improve_trace_export_session_recovery_integrity.md
-commit_309*.next
-*.py
-!emojis.py
-*.json
-!package.json
-!package-lock.json
-!tsconfig*.json
-!perf_baseline.json
-
-# --- Issue PR notes (local only) ---
-PR_270_improve_trace_export_session_recovery_integrity.md
-PR_271_improve_trace_export_source_discovery_fallback.md
-
-.gocache
-
-ishus.py
-
-ishus-t.py
-
-ishust.py
-
-create_phase9.py
-
-create_phase10.py
-
-# --- Windows build artifacts & debug symbols (#1184) ---
-# MSVC / Visual Studio
-*.pdb
-*.ilk
-*.idb
-*.obj
-*.lib
-*.exp
-*.map
-# MSVC incremental linker files
-*.vc.db
-*.vc.vc.db
-*.vcxproj.user
-*.vcxproj.filters
-# MSBuild / VS generated folders
-[Dd]ebug/
-[Rr]elease/
-x64/
-x86/
-[Aa][Rr][Mm]/
-[Aa][Rr][Mm]64/
-ipch/
-*.aps
-# CodeView debug info embedded in object files
-*.pchi
-# Windows-specific crash/dump artefacts
-*.dmp
-*.stackdump
-# MinGW / Cygwin
-*.a
-*.o
-# Generated resource files
-Resource.rc
-# Windows Installer artefacts
-*.msi
-*.msix
-*.cab
-
-# --- Snapshot / generated / temp files ---
 *.snap
-*.snapshot
-testdata/snapshots/
-tests/gen/*.generated.*
-*.testsnap
-*.testsnapshot
-__snapshots__/
-.glassbox_write_probe
-internal/simulator/perf_baseline_*.json
-!internal/simulator/perf_baseline.json
+*.snap.orig
+**/snapshots/
+!contracts/**/test_snapshots/
+coverage/
+coverage-*/
+.nyc_output/
+.jest-cache/
+_jest-cache/
+jest-results.json
+test-results/
+playwright-report/
+e2e/artifacts/
+e2e/screenshots/
+
+# Go test and lint scratch output
+*.out
+*.test
+lint_output*.txt
+tsc_output*.txt
+test_output.txt
+final_lint_check.txt
+lint_final_error.txt
+build_errors*.txt
+
+# ── Local development scratch files ───────────────────────────────────────────
+# One-off notes and helper scripts left at the repo root by debugging sessions.
+commit_msg.txt
+ISSUE_*_IMPLEMENTATION.md
+VALIDATION_RUN.md
+CHANGES_QUICK_REFERENCE.md
+verify_implementation.sh
+force_fix_licenses.sh
+fix_all_licenses.sh
+fix_licenses.sh
+fix_imports.sh
+fix_ci.sh
+push_pr.ps1
+
+# Generated reports and caches
+*.sarif
+*.lcov
+.eslintcache
+.stryker-tmp/
+bundle-size-report.json
+size-limit-report*.json
+.glassbox-cache/

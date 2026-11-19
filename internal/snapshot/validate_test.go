@@ -197,7 +197,7 @@ func TestValidateSnapshotBeforeReplay_StaleParams(t *testing.T) {
 	if !strings.Contains(err.Error(), "stale") {
 		t.Errorf("error should say 'stale', got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "re-run") || !strings.Contains(err.Error(), "Re-run") {
+	if !strings.Contains(err.Error(), "re-run") && !strings.Contains(err.Error(), "Re-run") {
 		t.Errorf("error should include remediation hint, got: %v", err)
 	}
 }

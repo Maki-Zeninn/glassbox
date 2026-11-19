@@ -170,13 +170,13 @@ var cacheClearCmd = &cobra.Command{
 
 		// Get confirmation unless force flag is set
 		if !cacheForceFlag {
-			fmt.Printf("This will delete ALL cached files in %s\n", cacheDir)
-			fmt.Print("Are you sure? (yes/no): ")
-			var response string
-			if _, err := fmt.Scanln(&response); err != nil {
-				return errors.WrapValidationError(fmt.Sprintf("failed to read confirmation input: %v", err))
+			confirmed, confirmErr := confirmWithForceOrNonInteractive(cmd,
+				fmt.Sprintf("This will delete ALL cached files in %s\nAre you sure? (yes/no): ", cacheDir),
+				false, false)
+			if confirmErr != nil {
+				return confirmErr
 			}
-			if response != "yes" && response != "y" {
+			if !confirmed {
 				fmt.Println("Cache clear cancelled")
 				return nil
 			}
@@ -353,12 +353,13 @@ Use --force to skip confirmation.`,
 		}
 
 		if !cacheForceFlag {
-			fmt.Printf("This will delete all cached %s artifacts for %s. Continue? (yes/no): ", artifactType, network)
-			var response string
-			if _, err := fmt.Scanln(&response); err != nil {
-				return fmt.Errorf("failed to read input: %w", err)
+			confirmed, confirmErr := confirmWithForceOrNonInteractive(cmd,
+				fmt.Sprintf("This will delete all cached %s artifacts for %s. Continue? (yes/no): ", artifactType, network),
+				false, false)
+			if confirmErr != nil {
+				return confirmErr
 			}
-			if response != "yes" && response != "y" {
+			if !confirmed {
 				fmt.Println("Cancelled")
 				return nil
 			}

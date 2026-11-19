@@ -263,7 +263,7 @@ func TestSandboxedPlugin_DecodeWithHangingBinary(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	script := "#!/bin/sh\nsleep 999\n"
+	script := "#!/bin/sh\nexec sleep 999\n"
 	binaryPath := filepath.Join(dir, "hang-plugin")
 	if err := os.WriteFile(binaryPath, []byte(script), 0755); err != nil {
 		t.Fatal(err)

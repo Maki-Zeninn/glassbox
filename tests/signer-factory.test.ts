@@ -13,7 +13,7 @@ jest.mock("../src/audit/signing/softwareSigner");
 jest.mock("../src/audit/signing/pkcs11Signer");
 
 describe("AuditSigner Factory", () => {
-  const mockPrivateKey = process.env.TEST_PRIVATE_KEY_PEM || "";
+  const mockPrivateKey = process.env.TEST_PRIVATE_KEY_PEM || "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIHashExampleKey\n-----END PRIVATE KEY-----";
   const mockPublicKey = process.env.TEST_PUBLIC_KEY_PEM || "";
 
   beforeEach(() => {

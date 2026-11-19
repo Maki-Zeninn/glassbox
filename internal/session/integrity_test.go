@@ -518,7 +518,8 @@ func TestSave_InvalidNetwork_ReturnsError(t *testing.T) {
 
 	d := validData()
 	d.Network = "devnet"
-	if err := store.Save(t.Context(), d); err == nil {
+	err = store.Save(t.Context(), d)
+	if err == nil {
 		t.Fatal("expected error for invalid Network")
 	}
 	if !strings.Contains(err.Error(), "devnet") {

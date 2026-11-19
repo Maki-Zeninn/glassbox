@@ -1,0 +1,64 @@
+[[changes]]
+type = "feature"
+breaking = false
+summary = "Implement audit verification directory policy checks with per-file results and stable error codes"
+issue = 806
+pull_request = 0
+
+[[changes.detail]]
+text = """
+`glassbox audit:verify-dir` now performs directory-level policy validation
+in addition to per-file signature and checksum checks.  A collection of
+audit log segments can violate constraints that look fine in isolation —
+this change detects those collection-level problems.
+
+Core library (internal/audit/verify.go):
+- `DirPolicy` struct with configurable constraints:
+    - `ExpectedSchemaVersion` — pin manifest schema_version across all segments
+    - `MaxRetentionDays` — flag segments older than N days
+    - `ExpectedSigners` — note when signer identity cannot be resolved from
+      manifest metadata alone (informational; per-record audit:verify required
+      for full identity enforcement)
+    - `RequireHashChain` — treat a missing/broken chain as a policy violation
+    - `FailFast` — stop after the first violation instead of collecting all
+- `SegmentVerifyResult` — per-segment outcome with individual pass/fail flags:
+  checksum_valid, chain_link_valid, schema_version_valid, retention_valid,
+  signer_valid.
+- `DirPolicyResult` — aggregate result with:
+    - `Segments []SegmentVerifyResult` — always non-nil, deterministic sequence order
+    - `PolicyViolations` and `StructuralIssues` counted separately
+    - `AggregateIssues` flat list prefixed with segment name
+    - `Truncated` flag when fail-fast triggered early exit
+    - `Policy` pointer echoes the active policy for auditability
+- `VerifyDirectoryWithPolicy(dir, policy)` — main entry point:
+    - Deterministic traversal (sorted by sequence, then filename)
+    - Never stops mid-directory unless FailFast is set
+    - Detects missing manifests, missing segment bodies, checksum mismatches,
+      sequence gaps, broken hash chain, and duplicate segment body hashes
+    - Partial results always valid for the portion examined
+- `LoadDirPolicy(path)` — reads a DirPolicy from a JSON file.
+
+CLI (internal/cmd/audit_verify_dir.go):
+New flags on `glassbox audit:verify-dir`:
+    --expected-schema-version <ver>
+    --max-retention-days <n>
+    --expected-signers <csv>
+    --require-chain
+    --fail-fast
+    --policy-config <json-file>   (CLI flags override file values)
+    --json                        (now includes per-segment SegmentVerifyResult)
+
+The command exit code is non-zero on any violation and surfaces the stable
+`ErstAuditDirPolicyViolation` / `ErrAuditDirPolicyViolation` error code.
+
+Errors (internal/errors):
+- New sentinel `ErrAuditDirPolicyViolation` and code `ErstAuditDirPolicyViolation`
+- `WrapAuditDirPolicyViolation(summary, count)` wrap function with IAC hint.
+
+Tests (internal/audit/verify_policy_test.go):
+Fixtures covering: empty dir, valid 3-segment chain, broken chain, checksum
+tampering, missing manifest, deterministic ordering across runs, sequence gap,
+schema version policy (match and mismatch), retention policy, fail-fast early
+stop, JSON round-trip, LoadDirPolicy, duplicate segment body detection, active
+segment presence, per-segment result ordering.
+"""

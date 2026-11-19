@@ -1,0 +1,11 @@
+
+ Transaction Execution Trace
+ Hash  : 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ No execution steps were recorded for this transaction.
+ Possible causes:
+   • The simulator did not produce diagnostic events (check --snapshots flag)
+   • The transaction does not contain InvokeHostFunction operations
+   • The simulator binary may be outdated (run 'glassbox doctor --fix')
+────────────────────────────────────────────────────────────────────────────────────────────────────
+

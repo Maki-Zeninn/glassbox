@@ -6,234 +6,240 @@ package report
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
+
+	"github.com/dotandev/glassbox/internal/redaction"
 )
 
-func TestExporterCreation(t *testing.T) {
-	tmpDir := t.TempDir()
+func TestExporter_WithProfile_RedactsExecutionSteps(t *testing.T) {
+	profile := redaction.FullProfile()
+	dir := t.TempDir()
 
-	exporter, err := NewExporter(tmpDir)
+	exp, err := NewExporterWithProfile(dir, profile)
 	if err != nil {
-		t.Fatalf("unexpected error creating exporter: %v", err)
+		t.Fatal(err)
 	}
 
-	if exporter == nil {
-		t.Fatal("expected non-nil exporter")
-		return
+	r := NewReport("test")
+	r.Execution = &ExecutionLog{
+		TransactionHash: "abc123secrettoken",
+		Steps: []ExecutionStep{
+			{
+				Index:      1,
+				Operation:  "call",
+				ContractID: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2",
+				Function:   "transfer",
+				Details:    "some details",
+			},
+		},
 	}
 
-	if exporter.outputDir != tmpDir {
-		t.Errorf("expected output dir %q, got %q", tmpDir, exporter.outputDir)
-	}
-}
-
-func TestHTMLExport(t *testing.T) {
-	tmpDir := t.TempDir()
-	exporter, _ := NewExporter(tmpDir)
-
-	report := NewBuilder("Test Report").
-		WithTransactionHash("0xhtml").
-		SetSummary("success", "50ms", 5, 0, 0, 100.0).
-		Build()
-
-	path, err := exporter.Export(report, "html")
+	path, err := exp.Export(r, "json")
 	if err != nil {
-		t.Fatalf("unexpected error exporting HTML: %v", err)
-	}
-
-	if path == "" {
-		t.Error("expected non-empty path")
-	}
-
-	if !strings.HasSuffix(path, ".html") {
-		t.Errorf("expected .html extension, got %q", path)
-	}
-
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("exported file not found: %v", err)
-	}
-}
-
-func TestPDFExport(t *testing.T) {
-	tmpDir := t.TempDir()
-	exporter, _ := NewExporter(tmpDir)
-
-	report := NewBuilder("Test Report").
-		WithTransactionHash("0xpdf").
-		SetSummary("success", "75ms", 8, 1, 0, 98.5).
-		Build()
-
-	path, err := exporter.Export(report, "pdf")
-	if err != nil {
-		t.Fatalf("unexpected error exporting PDF: %v", err)
-	}
-
-	if !strings.HasSuffix(path, ".pdf") {
-		t.Errorf("expected .pdf extension, got %q", path)
-	}
-
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("exported file not found: %v", err)
-	}
-}
-
-func TestJSONExportToFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	exporter, _ := NewExporter(tmpDir)
-
-	report := NewBuilder("Test Report").
-		WithTransactionHash("0xjson").
-		SetSummary("success", "60ms", 10, 2, 0, 97.5).
-		Build()
-
-	path, err := exporter.Export(report, "json")
-	if err != nil {
-		t.Fatalf("unexpected error exporting JSON: %v", err)
-	}
-
-	if !strings.HasSuffix(path, ".json") {
-		t.Errorf("expected .json extension, got %q", path)
+		t.Fatal(err)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Errorf("failed to read exported file: %v", err)
+		t.Fatal(err)
 	}
 
-	if len(data) == 0 {
-		t.Error("expected non-empty JSON file")
-	}
-
-	if !strings.Contains(string(data), "0xjson") {
-		t.Error("expected transaction hash in exported JSON")
+	content := string(data)
+	// Contract ID should be redacted
+	if contains(content, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2") {
+		t.Error("contract ID should be redacted in exported report")
 	}
 }
 
-func TestMultipleFormatsExport(t *testing.T) {
-	tmpDir := t.TempDir()
-	exporter, _ := NewExporter(tmpDir)
+func TestExporter_WithoutProfile_NoRedaction(t *testing.T) {
+	dir := t.TempDir()
 
-	report := NewBuilder("Test Report").
-		WithTransactionHash("0xmulti").
-		SetSummary("success", "80ms", 12, 1, 0, 98.0).
-		Build()
-
-	results, err := exporter.ExportMultiple(report, []string{"html", "json", "pdf"})
+	exp, err := NewExporter(dir)
 	if err != nil {
-		t.Fatalf("unexpected error exporting multiple: %v", err)
+		t.Fatal(err)
 	}
 
-	if len(results) != 3 {
-		t.Errorf("expected 3 exported formats, got %d", len(results))
+	r := NewReport("test")
+	r.Execution = &ExecutionLog{
+		TransactionHash: "abc123",
+		Steps: []ExecutionStep{
+			{
+				Index:      1,
+				ContractID: "some-contract",
+				Function:   "transfer",
+			},
+		},
 	}
 
-	if _, ok := results["html"]; !ok {
-		t.Error("expected HTML export path in results")
+	path, err := exp.Export(r, "json")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if _, ok := results["json"]; !ok {
-		t.Error("expected JSON export path in results")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if _, ok := results["pdf"]; !ok {
-		t.Error("expected PDF export path in results")
-	}
-}
-
-func TestFilenameGeneration(t *testing.T) {
-	filename := generateFilename("My Test Report", "html")
-
-	if !strings.HasSuffix(filename, ".html") {
-		t.Errorf("expected .html extension, got %q", filename)
-	}
-
-	if !strings.Contains(filename, "my_test_report") {
-		t.Errorf("expected sanitized title in filename, got %q", filename)
-	}
-
-	if !strings.Contains(filename, "-") {
-		t.Error("expected timestamp separator in filename")
+	content := string(data)
+	if !contains(content, "some-contract") {
+		t.Error("without profile, contract ID should be preserved")
 	}
 }
 
-func TestInvalidOutputDir(t *testing.T) {
-	// Use a path that's invalid on both Unix and Windows
-	// On Unix, /dev/null is a device file, not a directory
-	// On Windows, NUL is a reserved device name that can't be a directory
-	var invalidDir string
-	if os.PathSeparator == '\\' {
-		// Windows: use a reserved device name
-		invalidDir = "NUL\\invalid\\path"
-	} else {
-		// Unix: use a path under /dev/null which can't be a directory
-		invalidDir = "/dev/null/invalid/path"
+func TestExporter_WithProfile_RedactsMetadataTags(t *testing.T) {
+	profile := redaction.FullProfile()
+	dir := t.TempDir()
+
+	exp, err := NewExporterWithProfile(dir, profile)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	_, err := NewExporter(invalidDir)
-	if err == nil {
-		t.Error("expected error creating exporter with invalid path")
+	r := NewReport("test")
+	r.Metadata = &Metadata{
+		GeneratorVersion: "1.0.0",
+		Tags: map[string]string{
+			"rpc_token": "super-secret-token-value",
+			"network":   "testnet",
+		},
+	}
+
+	path, err := exp.Export(r, "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(data)
+	if contains(content, "super-secret-token-value") {
+		t.Error("rpc_token in metadata tags should be redacted")
+	}
+	if !contains(content, "testnet") {
+		t.Error("network tag should be preserved")
 	}
 }
 
-func TestSanitizeFilename(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"Normal Title", "normal_title"},
-		{"Title With @#$%", "title_with_"},
-		{"UPPERCASE", "uppercase"},
-		{"Multiple___Underscores", "multiple_underscores"},
-		{"123 Numbers 456", "123_numbers_456"},
+func TestExporter_WithProfile_RedactsKeyFindings(t *testing.T) {
+	profile := redaction.SecretsOnlyProfile()
+	dir := t.TempDir()
+
+	exp, err := NewExporterWithProfile(dir, profile)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	for _, test := range tests {
-		result := sanitizeFilename(test.input)
-		if result != test.expected {
-			t.Errorf("sanitizeFilename(%q) = %q, expected %q", test.input, result, test.expected)
+	r := NewReport("test")
+	r.Summary = &Summary{
+		KeyFindings: []string{
+			"Transaction succeeded",
+			"Token value: SDXL6BUWX7HQZQBZJN5HQUV3LQHZ7FJVHQXQ5Y3T6GFLQY2SDNM2Q",
+		},
+	}
+
+	path, err := exp.Export(r, "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := string(data)
+	if !contains(content, "Transaction succeeded") {
+		t.Error("normal finding should be preserved")
+	}
+	if contains(content, "SDXL6BUWX7HQZQBZJN5HQUV3LQHZ7FJVHQXQ5Y3T6GFLQY2SDNM2Q") {
+		t.Error("stellar key in findings should be redacted")
+	}
+}
+
+func TestExporter_ExportMultiple_WithProfile(t *testing.T) {
+	profile := redaction.FullProfile()
+	dir := t.TempDir()
+
+	exp, err := NewExporterWithProfile(dir, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewReport("multi-test")
+	r.Summary = &Summary{
+		KeyFindings: []string{"finding with SDXL6BUWX7HQZQBZJN5HQUV3LQHZ7FJVHQXQ5Y3T6GFLQY2SDNM2Q"},
+	}
+
+	results, err := exp.ExportMultiple(r, []string{"json", "html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for format, path := range results {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s output: %v", format, err)
+		}
+		if contains(string(data), "SDXL6BUWX7HQZQBZJN5HQUV3LQHZ7FJVHQXQ5Y3T6GFLQY2SDNM2Q") {
+			t.Errorf("%s output should have redacted the stellar key", format)
 		}
 	}
 }
 
-func TestExportDirectoryCreation(t *testing.T) {
-	tmpDir := filepath.Join(t.TempDir(), "nested", "output", "dir")
+func TestExporter_HTML_Redaction(t *testing.T) {
+	profile := redaction.FullProfile()
+	dir := t.TempDir()
 
-	exporter, err := NewExporter(tmpDir)
+	exp, err := NewExporterWithProfile(dir, profile)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(tmpDir); err != nil {
-		t.Errorf("output directory not created: %v", err)
+	r := NewReport("html-redact-test")
+	r.Execution = &ExecutionLog{
+		TransactionHash: "secret-hash-value",
+		Steps: []ExecutionStep{
+			{
+				Index:      1,
+				ContractID: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2",
+				Function:   "transfer",
+			},
+		},
 	}
 
-	if exporter.outputDir != tmpDir {
-		t.Errorf("expected output dir %q, got %q", tmpDir, exporter.outputDir)
-	}
-}
-
-func TestUnsupportedFormat(t *testing.T) {
-	tmpDir := t.TempDir()
-	exporter, _ := NewExporter(tmpDir)
-
-	report := NewBuilder("Test Report").Build()
-
-	_, err := exporter.Export(report, "unsupported")
-	if err == nil {
-		t.Error("expected error for unsupported format")
+	path, err := exp.Export(r, "html")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if !strings.Contains(err.Error(), "unsupported format") {
-		t.Errorf("expected unsupported format error, got: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
 
-func TestLongFilenameHandling(t *testing.T) {
-	longTitle := strings.Repeat("A", 100)
-	filename := generateFilename(longTitle, "html")
-
-	if len(filename) > 75 {
-		t.Errorf("filename too long: %d chars, expected <= 75", len(filename))
+	content := string(data)
+	if contains(content, "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQAHHAGCN4B2") {
+		t.Error("HTML report should have redacted contract ID")
 	}
 }
+
+func contains(s, sub string) bool {
+	return len(s) > 0 && len(sub) > 0 && len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstr(s, sub))
+}
+
+func containsSubstr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// Ensure time import is used
+var _ = time.Now

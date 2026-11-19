@@ -1,0 +1,49 @@
+[[changes]]
+type = "feature"
+breaking = false
+summary = "Add KMS signing retry classification, audit metadata, and stable error codes"
+issue = 805
+pull_request = 0
+
+[[changes.detail]]
+text = """
+KMS signing failures are now mapped to stable structured error codes so
+operators and automation can distinguish permanent authorization failures
+from transient service errors without parsing message strings.
+
+Go changes:
+- `KMSSigner.AuditMetadata(correlationID)` returns non-sensitive key metadata
+  (key_ref, key_id_hex, region, algorithm, correlation_id) for inclusion in
+  signed audit envelopes [internal/signer/kms.go].
+- `KMSSigner.region` field records the AWS region for auditability.
+- Permanent authorization failures (AccessDeniedException, DisabledException,
+  InvalidKeyIdException, NotFoundException, etc.) map to `ErstKMSUnauthorized`
+  via `WrapKMSUnauthorized`.
+- Throttling failures after retry exhaustion map to `ErstKMSThrottled`
+  via `WrapKMSThrottled`.
+- Transient failures after retry exhaustion map to `ErstKMSTransientFailure`
+  via `WrapKMSTransientFailure`.
+- New sentinel errors: `ErrKMSThrottled`, `ErrKMSUnauthorized`,
+  `ErrKMSTransientFailure` in internal/errors.
+- New error codes: `ErstKMSThrottled`, `ErstKMSUnauthorized`,
+  `ErstKMSTransientFailure` in internal/errors/glassbox_error_code.go.
+- Helper sets: `kmsUnauthorizedCodes`, `kmsThrottlingCodes` with membership
+  functions `isKMSUnauthorizedCode`, `isKMSThrottlingCode`.
+
+TypeScript changes:
+- `src/audit/signing/mockKmsClient.ts` — importable deterministic mock KMS
+  module (`buildMockKmsModule`) with call log, error builders
+  (`kmsThrottlingError`, `kmsTransientError`, `kmsUnauthorizedError`,
+  `kmsNetworkError`), and safe call recording (message stored as hex,
+  never raw bytes).
+- `tests/kms-audit-metadata.test.ts` — test suite verifying:
+  correlation ID threading, key identity auditability (safeKeyIdRef),
+  deterministic digest across retries, throttling stable error code,
+  authorization errors stop without retrying, network errors retry,
+  successful metadata completeness, idempotency hit, and buildMockKmsModule
+  call log fidelity.
+
+Documentation:
+- docs/audit-kms-signing.md updated with IAM permissions, regional behavior,
+  metadata fields table, and stable error code descriptions.
+"""

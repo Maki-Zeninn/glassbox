@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/dotandev/glassbox/internal/logger"
+	"github.com/dotandev/glassbox/internal/telemetry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -333,4 +334,38 @@ func TestMiddlewareChainOrdering(t *testing.T) {
 	assert.Equal(t, "inner:before", order[1])
 	assert.Equal(t, "inner:after", order[len(order)-2])
 	assert.Equal(t, "outer:after", order[len(order)-1])
+}
+
+func TestLoggingMiddleware_CorrelationID(t *testing.T) {
+	var capturedHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeader = r.Header.Get("X-Correlation-ID")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`OK`))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	origLogger := logger.Logger
+	logger.Logger = slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	defer func() { logger.Logger = origLogger }()
+
+	ctx, corrID := telemetry.EnsureCorrelationID(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
+	require.NoError(t, err)
+
+	mw := NewLoggingMiddleware()
+	transport := mw(http.DefaultTransport)
+
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	assert.Equal(t, corrID, capturedHeader, "X-Correlation-ID header should be set from context")
+
+	// Verify structured log output contains correlation_id
+	var entry map[string]any
+	err = json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry)
+	require.NoError(t, err)
+	assert.Equal(t, corrID, entry["correlation_id"], "log entry should contain correlation_id")
 }

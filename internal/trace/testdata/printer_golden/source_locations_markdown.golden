@@ -1,0 +1,49 @@
+# Glassbox Trace Export
+
+**Transaction:** 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+
+**Steps:** 2
+
+**Started:** 2026-01-01T00:00:00Z
+
+**Ended:** 2026-01-01T00:00:05Z
+
+
+
+## Step 0: contract_call
+
+- **Operation:** contract_call
+- **Event:** contract_call
+- **Contract:** CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+- **Function:** mint
+- **Source:** src/lib.rs:42
+- **GitHub:** [View on GitHub](https://github.com/example/token/blob/main/src/lib.rs#L42)
+- **Arguments:** []
+- **Details:**
+  
+  - operation: contract_call
+  
+  - contract: CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  
+  - function: mint
+  
+
+
+
+## Step 1: contract_call
+
+- **Operation:** contract_call
+- **Event:** contract_call
+- **Contract:** CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+- **Function:** balance
+- **Arguments:** []
+- **Details:**
+  
+  - operation: contract_call
+  
+  - contract: CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  
+  - function: balance
+  
+
+

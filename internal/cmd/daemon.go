@@ -89,6 +89,12 @@ Example:
 			Network:   daemonNetwork,
 			RPCURL:    daemonRPCURL,
 			AuthToken: daemonAuthToken,
+			Auth: daemon.AuthConfig{
+				Token:        daemonAuthToken,
+				Role:         daemon.RoleDebug,
+				BindScope:    daemon.BindLocalhost,
+				AuditEnabled: true,
+			},
 		})
 		if err != nil {
 			return errors.WrapValidationError(fmt.Sprintf("failed to create server: %v", err))

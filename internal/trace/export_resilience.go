@@ -422,7 +422,28 @@ func VerifyExport(tracePath string) error {
 		return fmt.Errorf("failed to parse metadata file: %w\n"+
 			"  Metadata file may be corrupted", err)
 	}
-	
+
+	// Validate the schema version recorded in the metadata file. An empty
+	// Version field means the file pre-dates versioned metadata; that is
+	// allowed with a warning. A non-empty but unrecognised value is rejected
+	// so users know the file was produced by a newer binary.
+	if metadata.Version != "" {
+		if err := ValidateJSONSchemaVersion(metadata.Version); err != nil {
+			return fmt.Errorf("metadata file records unsupported schema_version %q\n"+
+				"  Supported versions: %s\n"+
+				"  Fix: re-export the trace with the current CLI version, or upgrade Glassbox",
+				metadata.Version,
+				joinSupportedVersions())
+		}
+		if !IsJSONSchemaVersionSupported(metadata.Version) {
+			return fmt.Errorf("metadata file records schema_version %q which is not supported by this binary\n"+
+				"  Supported versions: %s\n"+
+				"  Fix: re-export the trace with the current CLI version, or upgrade Glassbox",
+				metadata.Version,
+				joinSupportedVersions())
+		}
+	}
+
 	// Read trace file
 	traceData, err := os.ReadFile(tracePath)
 	if err != nil {

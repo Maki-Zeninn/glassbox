@@ -1,0 +1,28 @@
+category = "fix"
+
+pr = 900
+
+summary = "Added origin classification for DWARF-resolved source locations to distinguish user, generated, and external frames in trace output"
+
+details = """
+Trace output and trap diagnostics now label generated build-output paths
+(target/, .wasm) and external crate paths (.cargo/registry) with [generated]
+or [external] annotations so developers immediately see whether a source
+location is in their own code or inside a dependency.
+
+New components:
+  - internal/sourcemap/origin.go — OriginClass type and Classifier struct
+  - SourceRef.OriginClass field in internal/trace/splitpane.go (JSON: origin_class)
+  - TrapInfo.OriginClass field in internal/trace/trap.go
+  - FormatTrapInfo, formatter.go, splitpane.go, and ui/trace_view.go all
+    surface the label when origin is not "user"
+
+The feature is additive. Existing traces without origin_class are treated as
+unknown and display no extra annotation.
+"""
+
+breaking = false
+migration_note = ""
+
+affects = ["json-output", "schema"]
+compatibility = "stable"

@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "updated": "2026-07-27T00:00:00Z",
+  "description": "Performance budgets for key Glassbox operations. Each entry defines latency (ns/op), memory (bytes/op), and output-size ceilings for representative trace sizes.",
+  "trace_sizes": {
+    "small": {
+      "description": "<100 nodes, single contract invocation",
+      "max_nodes": 100,
+      "max_bytes": 51200
+    },
+    "medium": {
+      "description": "100-5000 nodes, multiple contract calls and events",
+      "max_nodes": 5000,
+      "max_bytes": 2097152
+    },
+    "large": {
+      "description": ">5000 nodes, deep call trees, many diagnostic events",
+      "max_nodes": 50000,
+      "max_bytes": 20971520
+    }
+  },
+  "budgets": {
+    "parse_json": {
+      "small":  { "ns_per_op": 100000,  "bytes_per_op": 32768,  "allocs_per_op": 50 },
+      "medium": { "ns_per_op": 2000000, "bytes_per_op": 524288, "allocs_per_op": 2000 },
+      "large":  { "ns_per_op": 20000000, "bytes_per_op": 5242880, "allocs_per_op": 20000 }
+    },
+    "search_trace": {
+      "small":  { "ns_per_op": 50000,   "bytes_per_op": 8192,   "allocs_per_op": 20 },
+      "medium": { "ns_per_op": 500000,  "bytes_per_op": 65536,  "allocs_per_op": 200 },
+      "large":  { "ns_per_op": 5000000, "bytes_per_op": 524288, "allocs_per_op": 2000 }
+    },
+    "map_ledger_entries": {
+      "small":  { "ns_per_op": 30000,   "bytes_per_op": 4096,   "allocs_per_op": 10 },
+      "medium": { "ns_per_op": 300000,  "bytes_per_op": 65536,  "allocs_per_op": 100 },
+      "large":  { "ns_per_op": 3000000, "bytes_per_op": 524288, "allocs_per_op": 1000 }
+    },
+    "compare_sessions": {
+      "small":  { "ns_per_op": 20000,   "bytes_per_op": 4096,   "allocs_per_op": 10 },
+      "medium": { "ns_per_op": 200000,  "bytes_per_op": 32768,  "allocs_per_op": 100 },
+      "large":  { "ns_per_op": 2000000, "bytes_per_op": 262144, "allocs_per_op": 1000 }
+    },
+    "export_session": {
+      "small":  { "ns_per_op": 100000,  "bytes_per_op": 16384,  "allocs_per_op": 30 },
+      "medium": { "ns_per_op": 1000000, "bytes_per_op": 262144, "allocs_per_op": 300 },
+      "large":  { "ns_per_op": 10000000, "bytes_per_op": 2097152, "allocs_per_op": 3000 }
+    },
+    "rpc_call": {
+      "small":  { "ns_per_op": 500000,  "bytes_per_op": 8192,   "allocs_per_op": 25 },
+      "medium": { "ns_per_op": 1000000, "bytes_per_op": 16384,  "allocs_per_op": 50 },
+      "large":  { "ns_per_op": 2000000, "bytes_per_op": 32768,  "allocs_per_op": 100 }
+    },
+    "replay_trace": {
+      "small":  { "ns_per_op": 50000,   "bytes_per_op": 4096,   "allocs_per_op": 15 },
+      "medium": { "ns_per_op": 500000,  "bytes_per_op": 65536,  "allocs_per_op": 150 },
+      "large":  { "ns_per_op": 5000000, "bytes_per_op": 524288, "allocs_per_op": 1500 }
+    },
+    "decode_source_map": {
+      "small":  { "ns_per_op": 80000,   "bytes_per_op": 8192,   "allocs_per_op": 20 },
+      "medium": { "ns_per_op": 800000,  "bytes_per_op": 65536,  "allocs_per_op": 200 },
+      "large":  { "ns_per_op": 8000000, "bytes_per_op": 524288, "allocs_per_op": 2000 }
+    }
+  },
+  "regression_threshold_percent": 200
+}

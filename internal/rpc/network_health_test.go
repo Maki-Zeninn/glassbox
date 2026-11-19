@@ -180,6 +180,38 @@ func TestHealthCollector_SetCircuitState(t *testing.T) {
 	assert.False(t, stats.CircuitOpen)
 }
 
+func TestHealthCollector_RecordRequest_EmptyURL_Ignored(t *testing.T) {
+	hc := NewHealthCollector()
+
+	hc.RecordRequest("", 100*time.Millisecond, true)
+	hc.RecordRequest("http://node.example.com", 50*time.Millisecond, true)
+
+	stats := hc.GetStats("http://node.example.com")
+	require.NotNil(t, stats)
+	assert.Equal(t, int64(1), stats.TotalRequests)
+}
+
+func TestHealthCollector_GetHealthiestURL_EmptySlice_ReturnsEmpty(t *testing.T) {
+	hc := NewHealthCollector()
+	result := hc.GetHealthiestURL([]string{})
+	assert.Empty(t, result)
+}
+
+func TestHealthCollector_RankURLsByHealth_EmptySlice_ReturnsNil(t *testing.T) {
+	hc := NewHealthCollector()
+	result := hc.RankURLsByHealth([]string{})
+	assert.Nil(t, result)
+}
+
+func TestHealthCollector_RankURLsByHealth_SkipsEmptyURLs(t *testing.T) {
+	hc := NewHealthCollector()
+	hc.RecordRequest("http://good.example.com", 50*time.Millisecond, true)
+
+	ranked := hc.RankURLsByHealth([]string{"", "http://good.example.com", ""})
+	require.Len(t, ranked, 1)
+	assert.Equal(t, "http://good.example.com", ranked[0])
+}
+
 func TestHealthCollector_ConcurrentAccess(t *testing.T) {
 	hc := NewHealthCollector()
 	done := make(chan bool)

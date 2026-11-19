@@ -443,16 +443,15 @@ func (v *Pkcs11Validator) checkSignTest(report *PreflightReport, session, keyHan
 // platformModuleHint returns a platform-specific hint for a missing module file.
 func platformModuleHint(path string) string {
 	hints := map[string]string{
-		"/usr/lib/softhsm/libsofthsm2.so":                    "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
-		"/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so":    "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
-		"/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so":    "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
-		"/usr/local/lib/softhsm/libsofthsm2.so":               "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
-		"/usr/lib/opensc-pkcs11.so":                           "install OpenSC: 'apt install opensc' (Debian/Ubuntu) or 'brew install opensc' (macOS)",
-		"/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so":          "install OpenSC: 'apt install opensc' (Debian/Ubuntu) or 'brew install opensc' (macOS)",
-		"/usr/local/lib/opensc-pkcs11.so":                     "install OpenSC: 'brew install opensc' (macOS)",
-		"/usr/lib/libykcs11.so":                               "install YubiKey PKCS#11: 'apt install ykcs11' (Debian/Ubuntu) or 'brew install yubico-piv-tool' (macOS)",
-		"/usr/local/lib/libykcs11.dylib":                      "install YubiKey PKCS#11: 'brew install yubico-piv-tool' (macOS)",
-		"/usr/lib/x86_64-linux-gnu/libykcs11.so":              "install YubiKey PKCS#11: 'apt install ykcs11' (Debian/Ubuntu) or 'brew install yubico-piv-tool' (macOS)",
+		"/usr/lib/softhsm/libsofthsm2.so":                  "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
+		"/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so": "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
+		"/usr/local/lib/softhsm/libsofthsm2.so":            "install SoftHSM2: 'apt install softhsm2' (Debian/Ubuntu) or 'brew install softhsm' (macOS)",
+		"/usr/lib/opensc-pkcs11.so":                        "install OpenSC: 'apt install opensc' (Debian/Ubuntu) or 'brew install opensc' (macOS)",
+		"/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so":       "install OpenSC: 'apt install opensc' (Debian/Ubuntu) or 'brew install opensc' (macOS)",
+		"/usr/local/lib/opensc-pkcs11.so":                  "install OpenSC: 'brew install opensc' (macOS)",
+		"/usr/lib/libykcs11.so":                            "install YubiKey PKCS#11: 'apt install ykcs11' (Debian/Ubuntu) or 'brew install yubico-piv-tool' (macOS)",
+		"/usr/local/lib/libykcs11.dylib":                   "install YubiKey PKCS#11: 'brew install yubico-piv-tool' (macOS)",
+		"/usr/lib/x86_64-linux-gnu/libykcs11.so":           "install YubiKey PKCS#11: 'apt install ykcs11' (Debian/Ubuntu) or 'brew install yubico-piv-tool' (macOS)",
 	}
 
 	if hint, ok := hints[path]; ok {
@@ -478,10 +477,4 @@ func validateModuleExtension(path string) string {
 		}
 	}
 	return ""
-}
-
-	if hint, ok := hints[path]; ok {
-		return hint
-	}
-	return fmt.Sprintf("verify the path %q is correct for your platform and HSM vendor; check vendor documentation for the module location", path)
 }

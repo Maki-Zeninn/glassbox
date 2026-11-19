@@ -145,8 +145,11 @@ func TestExportFormat_GetFileExtension(t *testing.T) {
 }
 
 func TestExportFlamegraph_SVGFormat(t *testing.T) {
-	svg := `<svg><rect/></svg>`
-	result := ExportFlamegraph(svg, FormatSVG)
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><g><rect x="0" y="0" width="100" height="20"/><text>x</text></g></svg>`
+	result, err := ExportFlamegraph(svg, FormatSVG)
+	if err != nil {
+		t.Fatalf("ExportFlamegraph returned error: %v", err)
+	}
 
 	if !strings.Contains(result, "<svg") {
 		t.Error("ExportFlamegraph(FormatSVG) did not return SVG")
@@ -160,8 +163,11 @@ func TestExportFlamegraph_SVGFormat(t *testing.T) {
 }
 
 func TestExportFlamegraph_HTMLFormat(t *testing.T) {
-	svg := `<svg><rect/></svg>`
-	result := ExportFlamegraph(svg, FormatHTML)
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><g><rect x="0" y="0" width="100" height="20"/><text>x</text></g></svg>`
+	result, err := ExportFlamegraph(svg, FormatHTML)
+	if err != nil {
+		t.Fatalf("ExportFlamegraph returned error: %v", err)
+	}
 
 	if !strings.Contains(result, "<!DOCTYPE html>") {
 		t.Error("ExportFlamegraph(FormatHTML) did not return HTML")
@@ -175,8 +181,11 @@ func TestExportFlamegraph_HTMLFormat(t *testing.T) {
 }
 
 func TestExportFlamegraph_DefaultFormat(t *testing.T) {
-	svg := `<svg><rect/></svg>`
-	result := ExportFlamegraph(svg, ExportFormat("invalid"))
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><g><rect x="0" y="0" width="100" height="20"/><text>x</text></g></svg>`
+	result, err := ExportFlamegraph(svg, ExportFormat("invalid"))
+	if err != nil {
+		t.Fatalf("ExportFlamegraph returned error: %v", err)
+	}
 
 	// Should default to SVG
 	if !strings.Contains(result, "<svg") {

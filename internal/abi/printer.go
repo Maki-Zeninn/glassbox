@@ -6,6 +6,7 @@ package abi
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -166,11 +167,19 @@ type jsonEventParam struct {
 }
 
 // FormatJSON returns a JSON representation of the contract spec with resolved
-// type names.
+// type names. The output is deterministic: entries are sorted by name and line
+// endings are normalized to LF.
 func FormatJSON(spec *ContractSpec) (string, error) {
 	js := jsonSpec{}
 
-	for _, fn := range spec.Functions {
+	// Sort functions by name for deterministic output
+	sortedFunctions := make([]xdr.ScSpecFunctionV0, len(spec.Functions))
+	copy(sortedFunctions, spec.Functions)
+	sort.Slice(sortedFunctions, func(i, j int) bool {
+		return string(sortedFunctions[i].Name) < string(sortedFunctions[j].Name)
+	})
+
+	for _, fn := range sortedFunctions {
 		jf := jsonFunction{
 			Name: string(fn.Name),
 			Doc:  fn.Doc,
@@ -184,7 +193,14 @@ func FormatJSON(spec *ContractSpec) (string, error) {
 		js.Functions = append(js.Functions, jf)
 	}
 
-	for _, s := range spec.Structs {
+	// Sort structs by name for deterministic output
+	sortedStructs := make([]xdr.ScSpecUdtStructV0, len(spec.Structs))
+	copy(sortedStructs, spec.Structs)
+	sort.Slice(sortedStructs, func(i, j int) bool {
+		return string(sortedStructs[i].Name) < string(sortedStructs[j].Name)
+	})
+
+	for _, s := range sortedStructs {
 		jst := jsonStruct{Name: string(s.Name), Doc: s.Doc}
 		for _, f := range s.Fields {
 			jst.Fields = append(jst.Fields, jsonField{Name: f.Name, Type: FormatTypeDef(f.Type)})
@@ -192,7 +208,14 @@ func FormatJSON(spec *ContractSpec) (string, error) {
 		js.Structs = append(js.Structs, jst)
 	}
 
-	for _, e := range spec.Enums {
+	// Sort enums by name for deterministic output
+	sortedEnums := make([]xdr.ScSpecUdtEnumV0, len(spec.Enums))
+	copy(sortedEnums, spec.Enums)
+	sort.Slice(sortedEnums, func(i, j int) bool {
+		return string(sortedEnums[i].Name) < string(sortedEnums[j].Name)
+	})
+
+	for _, e := range sortedEnums {
 		je := jsonEnum{Name: string(e.Name), Doc: e.Doc}
 		for _, c := range e.Cases {
 			je.Cases = append(je.Cases, jsonEnumCase{Name: c.Name, Value: uint32(c.Value)})
@@ -200,7 +223,14 @@ func FormatJSON(spec *ContractSpec) (string, error) {
 		js.Enums = append(js.Enums, je)
 	}
 
-	for _, u := range spec.Unions {
+	// Sort unions by name for deterministic output
+	sortedUnions := make([]xdr.ScSpecUdtUnionV0, len(spec.Unions))
+	copy(sortedUnions, spec.Unions)
+	sort.Slice(sortedUnions, func(i, j int) bool {
+		return string(sortedUnions[i].Name) < string(sortedUnions[j].Name)
+	})
+
+	for _, u := range sortedUnions {
 		ju := jsonUnion{Name: string(u.Name), Doc: u.Doc}
 		for _, c := range u.Cases {
 			switch c.Kind {
@@ -217,7 +247,14 @@ func FormatJSON(spec *ContractSpec) (string, error) {
 		js.Unions = append(js.Unions, ju)
 	}
 
-	for _, e := range spec.ErrorEnums {
+	// Sort error enums by name for deterministic output
+	sortedErrorEnums := make([]xdr.ScSpecUdtErrorEnumV0, len(spec.ErrorEnums))
+	copy(sortedErrorEnums, spec.ErrorEnums)
+	sort.Slice(sortedErrorEnums, func(i, j int) bool {
+		return string(sortedErrorEnums[i].Name) < string(sortedErrorEnums[j].Name)
+	})
+
+	for _, e := range sortedErrorEnums {
 		je := jsonEnum{Name: string(e.Name), Doc: e.Doc}
 		for _, c := range e.Cases {
 			je.Cases = append(je.Cases, jsonEnumCase{Name: c.Name, Value: uint32(c.Value)})
@@ -225,7 +262,14 @@ func FormatJSON(spec *ContractSpec) (string, error) {
 		js.ErrorEnums = append(js.ErrorEnums, je)
 	}
 
-	for _, ev := range spec.Events {
+	// Sort events by name for deterministic output
+	sortedEvents := make([]xdr.ScSpecEventV0, len(spec.Events))
+	copy(sortedEvents, spec.Events)
+	sort.Slice(sortedEvents, func(i, j int) bool {
+		return string(sortedEvents[i].Name) < string(sortedEvents[j].Name)
+	})
+
+	for _, ev := range sortedEvents {
 		jev := jsonEvent{Name: string(ev.Name), Doc: ev.Doc}
 		for _, p := range ev.Params {
 			loc := "data"
@@ -245,7 +289,9 @@ func FormatJSON(spec *ContractSpec) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshaling JSON: %w", err)
 	}
-	return string(out), nil
+	// Normalize line endings for cross-platform consistency
+	normalized := strings.ReplaceAll(string(out), "\r\n", "\n")
+	return normalized, nil
 }
 
 func formatFunction(fn xdr.ScSpecFunctionV0) string {

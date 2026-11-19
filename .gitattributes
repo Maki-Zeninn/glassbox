@@ -1,0 +1,4 @@
+# Golden files are compared byte-for-byte after line-ending normalization;
+# storing them with LF on every platform keeps diffs reviewable and avoids
+# CRLF churn on Windows checkouts.
+*.golden text eol=lf

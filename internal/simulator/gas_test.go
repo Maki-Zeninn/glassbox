@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -389,5 +390,29 @@ func TestBudgetUsage_ToGasEstimation(t *testing.T) {
 	}
 	if gas.EstimatedFeeUpperBound < gas.EstimatedFeeLowerBound {
 		t.Errorf("fee upper bound should be >= lower bound")
+	}
+}
+
+// ─── Overflow guard ───────────────────────────────────────────────────────────
+
+func TestFeeEstimation_OverflowGuard(t *testing.T) {
+	bu := &BudgetUsage{
+		CPUInstructions:    math.MaxUint64,
+		MemoryBytes:        math.MaxUint64,
+		CPULimit:           math.MaxUint64,
+		MemoryLimit:        math.MaxUint64,
+		CPUUsagePercent:    100.0,
+		MemoryUsagePercent: 100.0,
+		OperationsCount:    1,
+	}
+
+	gas, err := bu.ToGasEstimation()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gas.EstimatedFeeUpperBound != math.MaxInt64 {
+		t.Errorf("EstimatedFeeUpperBound: want math.MaxInt64 (%d), got %d",
+			int64(math.MaxInt64), gas.EstimatedFeeUpperBound)
 	}
 }

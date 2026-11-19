@@ -11,6 +11,32 @@ import (
 	"github.com/dotandev/glassbox/internal/rpc"
 )
 
+// TestNetworkURL_AllNetworks verifies that NetworkURL returns a non-empty string
+// for every defined Network constant. This prevents a network constant being added
+// to the validNetworks map without a corresponding URL case in NetworkURL.
+func TestNetworkURL_AllNetworks(t *testing.T) {
+	t.Parallel()
+
+	networks := []Network{
+		NetworkPublic,
+		NetworkTestnet,
+		NetworkFuturenet,
+		NetworkStandalone,
+	}
+
+	for _, net := range networks {
+		net := net // capture range variable
+		t.Run(string(net), func(t *testing.T) {
+			t.Parallel()
+			cfg := NewConfig("", net)
+			got := cfg.NetworkURL()
+			if got == "" {
+				t.Errorf("NetworkURL() returned empty string for network %q", net)
+			}
+		})
+	}
+}
+
 // setTestHomeDir sets both HOME (Unix) and USERPROFILE (Windows) to the given directory
 // and returns a cleanup function to restore the original values
 func setTestHomeDir(t *testing.T, tmpDir string) func() {

@@ -110,6 +110,9 @@ type SchemaError struct {
 }
 
 func (e *SchemaError) Error() string {
+	if e.Path == "" {
+		return e.Result.Message
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "snapshot file %q: %s", e.Path, e.Result.Message)
 	return sb.String()
@@ -129,15 +132,16 @@ func AsSchemaError(err error) *SchemaError {
 	return nil
 }
 
-// ValidateSchemaVersion returns a *SchemaError when the stored version is not
-// the current PersistSchemaVersion, or nil when the version is current.
+// ValidateSchemaVersion returns a *SchemaError when the stored version is
+// unsupported (too old to migrate, or from the future). It returns nil when
+// the version is current or can be auto-migrated — callers that want to
+// distinguish those two cases should call classifySchemaVersion directly.
 //
-// Unlike CheckSchemaVersion (which reads a file), this operates on an already-
-// parsed version integer — it is suitable for use inside LoadPersisted after
-// the metadata is already decoded.
+// Unlike CheckSchemaVersion (which reads a file), this operates on an
+// already-parsed version integer and is suitable for use inside LoadPersisted.
 func ValidateSchemaVersion(stored int, path string) error {
 	r := classifySchemaVersion(stored)
-	if r.Unsupported || r.NeedsUpgrade {
+	if r.Unsupported {
 		return &SchemaError{Result: r, Path: path}
 	}
 	return nil

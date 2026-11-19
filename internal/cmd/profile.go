@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,7 +260,7 @@ func runSimulationProfile(cmd *cobra.Command) error {
 	}
 
 	// Display report.
-	displayOptimizationReport(resp.OptimizationReport, resp.BudgetUsage)
+	displayOptimizationReport(cmd.OutOrStdout(), resp.OptimizationReport, resp.BudgetUsage)
 
 	// Export to JSON if requested.
 	if profileOutJSON != "" {
@@ -340,53 +341,53 @@ func runTraceProfile(filename string) error {
 	return nil
 }
 
-func displayOptimizationReport(report *simulator.OptimizationReport, budget *simulator.BudgetUsage) {
-	fmt.Printf("\n=== Gas optimization report ===\n")
-	fmt.Printf("Overall Efficiency: %.1f%%\n", report.OverallEfficiency*100)
-	fmt.Printf("Status: %s\n", report.ComparisonToBaseline)
+func displayOptimizationReport(w io.Writer, report *simulator.OptimizationReport, budget *simulator.BudgetUsage) {
+	fmt.Fprintf(w, "\n=== Gas optimization report ===\n")
+	fmt.Fprintf(w, "Overall Efficiency: %.1f%%\n", report.OverallEfficiency*100)
+	fmt.Fprintf(w, "Status: %s\n", report.ComparisonToBaseline)
 
 	if budget != nil {
-		fmt.Printf("\nResource Usage:\n")
-		fmt.Printf("  CPU Instructions: %d (%.1f%% of limit)\n", budget.CPUInstructions, budget.CPUUsagePercent)
-		fmt.Printf("  Memory Bytes:     %d (%.1f%% of limit)\n", budget.MemoryBytes, budget.MemoryUsagePercent)
-		fmt.Printf("  Operations:       %d\n", budget.OperationsCount)
+		fmt.Fprintf(w, "\nResource Usage:\n")
+		fmt.Fprintf(w, "  CPU Instructions: %d (%.1f%% of limit)\n", budget.CPUInstructions, budget.CPUUsagePercent)
+		fmt.Fprintf(w, "  Memory Bytes:     %d (%.1f%% of limit)\n", budget.MemoryBytes, budget.MemoryUsagePercent)
+		fmt.Fprintf(w, "  Operations:       %d\n", budget.OperationsCount)
 	}
 
 	if len(report.BudgetBreakdown) > 0 {
-		fmt.Printf("\nBudget Breakdown:\n")
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "Category\tCost (Instructions)\tPercentage")
+		fmt.Fprintf(w, "\nBudget Breakdown:\n")
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "Category\tCost (Instructions)\tPercentage")
 		var total float64
 		for _, v := range report.BudgetBreakdown {
 			total += v
 		}
 		for cat, cost := range report.BudgetBreakdown {
 			pct := (cost / total) * 100
-			fmt.Fprintf(w, "%s\t%.0f\t%.1f%%\n", cat, cost, pct)
+			fmt.Fprintf(tw, "%s\t%.0f\t%.1f%%\n", cat, cost, pct)
 		}
-		w.Flush()
+		tw.Flush()
 	}
 
 	if len(report.Tips) > 0 {
-		fmt.Printf("\n[INFO] Optimization Tips:\n")
+		fmt.Fprintf(w, "\n[INFO] Optimization Tips:\n")
 		for _, tip := range report.Tips {
 			severity := tip.Severity
-			icon := "🟢 "
+			icon := " "
 			switch severity {
 			case "High":
-				icon = "🔴 "
+				icon = " "
 			case "Medium":
-				icon = "🟡 "
+				icon = " "
 			}
-			fmt.Printf("\n[%s%s] %s: %s\n", icon, severity, tip.Category, tip.Message)
+			fmt.Fprintf(w, "\n[%s%s] %s: %s\n", icon, severity, tip.Category, tip.Message)
 			if tip.EstimatedSavings != "" {
-				fmt.Printf("   Estimated Savings: %s\n", tip.EstimatedSavings)
+				fmt.Fprintf(w, "   Estimated Savings: %s\n", tip.EstimatedSavings)
 			}
 			if tip.CodeLocation != nil {
-				fmt.Printf("   Location: %s\n", *tip.CodeLocation)
+				fmt.Fprintf(w, "   Location: %s\n", *tip.CodeLocation)
 			}
 		}
 	} else {
-		fmt.Println("\n[OK] No specific optimizations identified. Your contract seems gas-efficient!")
+		fmt.Fprintln(w, "\n[OK] No specific optimizations identified. Your contract seems gas-efficient!")
 	}
 }

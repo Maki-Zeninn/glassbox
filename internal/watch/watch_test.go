@@ -115,6 +115,10 @@ func TestPollMaxAttempts(t *testing.T) {
 		t.Error("expected max attempts exceeded")
 	}
 
+	if result.Error == nil || result.Error.Error() != "polling stopped after 3 attempts" {
+		t.Errorf("expected 'polling stopped after 3 attempts', got %v", result.Error)
+	}
+
 	if attempt != 3 {
 		t.Errorf("expected 3 attempts, got %d", attempt)
 	}

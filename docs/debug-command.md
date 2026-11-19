@@ -28,6 +28,82 @@ glassbox debug --load-snapshots <registry-file>
 
 ---
 
+## Common flags at a glance
+
+The tables below list the flags most users need, grouped by what they control.
+Defaults match `glassbox debug --help`; flag descriptions are abbreviated here —
+see the detailed sections further down and the linked advanced docs for full
+behavior, accepted values, and error messages.
+
+### Input flags — what the command operates on
+
+| Flag | Default | Purpose | Advanced doc |
+|---|---|---|---|
+| `<transaction-hash>` (arg) | required* | 64-char lowercase hex transaction hash | — |
+| `--network`, `-n` | `mainnet` (auto-detected when omitted) | Stellar network: `testnet`, `mainnet`, or `futurenet` | [Core Flags](#core-flags) |
+| `--rpc-url` | _(config)_ | Custom RPC URL; comma-separated for failover | [Core Flags](#core-flags) |
+| `--rpc-token` | _(env: `GLASSBOX_RPC_TOKEN`)_ | RPC authentication token | [Core Flags](#core-flags) |
+| `--wasm` | _(none)_ | Path to local WASM file for offline replay | [Build Artifact Discovery](#build-artifact-discovery) |
+| `--xdr-file` / `--json-file` | _(none)_ | Load a local transaction envelope (XDR or JSON) | [Local envelope file](#local-envelope-file) |
+| `--load-snapshots` | _(none)_ | Replay a saved snapshot registry offline | [Offline snapshot replay](#offline-snapshot-replay) |
+| `--contract-source` | _(auto-discovery)_ | Explicit contract source directory for source mapping | [Source Mapping Flags](#source-mapping-flags) |
+| `--source-alias` | _(none)_ | JSON file mapping embedded source paths to local paths | [Source Mapping Flags](#source-mapping-flags) |
+| `--args` | _(none)_ | Mock arguments for local WASM replay | [WASM replay](#wasm-replay-no-network-required) |
+| `--mock-ledger-entry` / `--mock-ledger-manifest` | _(none)_ | Override ledger entries before simulation | [Build Artifact Discovery](#build-artifact-discovery) |
+
+\* Required unless `--wasm`, `--demo`, `--xdr-file`, `--json-file`, or
+`--load-snapshots` is provided.
+
+### Execution flags — how the command runs
+
+| Flag | Default | Purpose | Advanced doc |
+|---|---|---|---|
+| `--dry-run` | `false` | Validate inputs and environment without simulating | [Validation & Dry-Run](#validation--dry-run) |
+| `--plan` | `false` | Print the execution plan and exit without running | — |
+| `--watch` | `false` | Poll for a pending transaction on-chain before debugging | [Session & Watch Flags](#session--watch-flags) |
+| `--watch-timeout` | `30` (seconds) | Timeout for `--watch` mode | [Session & Watch Flags](#session--watch-flags) |
+| `--watch-files` | `false` | Rerun debug when local source/config files change | [Watch Mode](./WATCH_MODE.md) |
+| `--hot-reload` | `false` | Re-run local WASM replay when the binary changes | [Hot reload](#hot-reload) |
+| `--demo` | `false` | Print sample output (no network, for color detection) | [Demo Mode](#demo-mode) |
+| `--live` / `--latest-ledger` | `false` | Replay against the current validated ledger state | [Simulation Control Flags](#simulation-control-flags) |
+| `--no-cache` | `false` | Disable local ledger state caching for this run | [Session & Watch Flags](#session--watch-flags) |
+| `--snapshots` | `false` | Enable simulator snapshot capture | [Session & Watch Flags](#session--watch-flags) |
+| `--protocol-version` | _(auto)_ | Override the Soroban protocol version | [Simulation Control Flags](#simulation-control-flags) |
+| `--mock-time` | `0` | Override ledger timestamp (Unix seconds) | [Simulation Control Flags](#simulation-control-flags) |
+| `--mock-base-fee` | `0` | Override base fee (stroops) | [Simulation Control Flags](#simulation-control-flags) |
+| `--mock-gas-price` | `0` | Override gas price multiplier | [Simulation Control Flags](#simulation-control-flags) |
+| `--op` / `--operation` | `-1` (all operations) | Select a specific zero-based operation index | [Simulation Control Flags](#simulation-control-flags) |
+| `--trace-verbosity` | `normal` | Trace detail: `summary`, `normal`, or `verbose` | [Output Flags](#output-flags) |
+| `--skip-source-mapping` | `false` | Skip DWARF source mapping for faster raw trace replay | [Source Mapping Flags](#source-mapping-flags) |
+| `--secure-workspace` | `false` | Restrict artifact access to the current workspace | — |
+| `--pin-endpoint` | _(none)_ | Pin a specific RPC endpoint with the session | [Session & Watch Flags](#session--watch-flags) |
+
+### Output flags — what the command produces
+
+| Flag | Default | Purpose | Advanced doc |
+|---|---|---|---|
+| `--json` | `false` | Emit results as machine-readable JSON | [Output Flags](#output-flags) |
+| `--format` | `text` | Output format: `text` or `json` | [Output Flags](#output-flags) |
+| `--show-metrics` | `false` | Print RPC and simulation performance metrics | [Performance Metrics](#performance-metrics--) |
+| `--timings` | `false` | Print per-phase timing breakdown | — |
+| `--export-svg` | _(none)_ | Export the call graph as an SVG file | [Output Flags](#output-flags) |
+| `--save-snapshots` | _(none)_ | Save simulation results to a snapshot registry | [Session & Watch Flags](#session--watch-flags) |
+| `--generate-trace` / `--trace-output` | `false` / _(none)_ | Export execution trace to a file | — |
+| `--theme` | _(auto-detect)_ | Color theme: `dark`, `light`, `none`, `default`, `deuteranopia`, `protanopia`, `tritanopia`, `high-contrast` | [Theme Flag](#theme-flag) |
+| `--verbose`, `-v` | `false` | Verbose logging (equivalent to `--log-level=debug`) | [Output Flags](#output-flags) |
+| `--audit-key`, `--publish-ipfs`, `--publish-arweave` | _(none)_ | Sign and publish the audit trail to decentralised storage | [Audit & Decentralised Storage](#audit--decentralised-storage) |
+
+> **Profiling flags** (`--profile`, `--profile-format`) are global root-level
+> flags, not `debug`-specific. See [`glassbox profile`](./trace-profiling.md).
+
+Every flag documented above exists in `internal/cmd/debug.go` and its default
+matches the flag registration there. This table summarizes the most common
+flags; the detailed sections later in this page cover every flag, its accepted
+values, validation rules, and error messages. The table complements — it does
+not duplicate — `glassbox debug --help` and the generated flag help.
+
+---
+
 ## Core Flags
 
 | Flag | Default | Description |
@@ -50,67 +126,116 @@ glassbox debug --load-snapshots <registry-file>
 
 `--dry-run` validates inputs and checks the environment **without executing a simulation**. Use it in CI or before a long replay to catch configuration errors early.
 
-> **Note:** `--dry-run` cannot be combined with `--show-metrics`, `--demo`, `--wasm`, `--load-snapshots`, or local envelope input flags. These combinations are rejected with a clear message explaining why.
+> **Note:** `--dry-run` cannot be combined with `--show-metrics`, `--timings`, `--demo`, `--wasm`, `--load-snapshots`, or local envelope input flags (`--xdr-file`/`--json-file`). These combinations are rejected with a clear message explaining why. `--dry-run` always requires a transaction hash. `--watch` is not rejected, but its polling loop never starts — the plan is rendered and the command exits.
 
-**Checks performed by `--dry-run`:**
+Validation runs in three stages:
+
+**Stage 1 — shared command validation (`PreRunE`).** Every `debug` invocation, including `--dry-run`, runs the full preflight first:
+
+- Flag-combination guards (hash vs local file; `--watch` / `--compare-network` / `--live` vs local envelope input; `--live` vs `--demo`; `--hot-reload` requires `--wasm`)
+- Transaction hash format: exactly 64 lowercase hex characters
+- Network name validation: `--network` and `--compare-network` must each be `testnet`, `mainnet`, or `futurenet` and must differ from each other. Custom networks defined in config are **not** accepted by `debug` — they are rejected here, before any dry-run check runs.
+- Network auto-detection: when `--network` is omitted, the command probes `mainnet`, `testnet`, and `futurenet` concurrently (5-second timeout, best-effort; probe failures are silently ignored and `mainnet` remains the default). Passing `--network` explicitly skips the probe entirely.
+- Enum-flag validation: `--trace-verbosity`, `--trace-output`, `--theme`, `--format`, `--profile-format`, `--op` (values below `-1` rejected)
+- Build artifacts and input paths: `--contract-source`, `--source-alias` (missing alias targets warn but do not fail), `--build-manifest`, `--mock-ledger-manifest`, `--mock-ledger-entry`, `--wasm`, secure-workspace path checks, and security-aware validation of all input/output paths (null bytes, path traversal)
+- `--pin-endpoint` must equal `--rpc-url` when both are set
+- `--snapshot` schema preflight (stale or future schema versions are rejected before any work begins)
+
+A stage-1 failure aborts immediately with a `VALIDATION_FAILED` error and **exit code 1**. Later stages never run.
+
+**Stage 2 — dry-run guards (`RunE`).** Rejects `--dry-run` combined with local/demo/wasm/snapshot-registry input, `--show-metrics`, or `--timings`, and rejects `--dry-run` without a hash. These are also `VALIDATION_FAILED` errors (**exit code 1**).
+
+**Stage 3 — dry-run plan checks.** The command builds and renders the execution plan. Checks performed:
 
 1. Transaction hash format (64 hex chars)
-2. Network name validity (`testnet`, `mainnet`, `futurenet`, or a custom network defined in config)
-3. Compare-network name validity (when `--compare-network` is set)
-4. Compare-network distinctness (must differ from primary network)
-5. RPC URL format validation (when `--rpc-url` is provided)
-6. RPC endpoint reachability (health check with a 10-second timeout; empty health status is treated as a failure)
-7. Simulator binary presence and version compatibility
-8. Protocol version compatibility (when `--protocol-version` is set)
-9. Trace output configuration validation (when `--trace-output` is provided)
-10. `--contract-source` directory existence and type (when set)
-11. `--source-alias` JSON validity (when set; alias target warnings are printed but not counted as failures)
+2. Network name validity
+3. Compare-network name validity and distinctness (when `--compare-network` is set)
+4. RPC URL format validation (when `--rpc-url` is provided; comma-separated fallback lists are split and each URL is checked for scheme and host)
+5. Simulator binary presence (`glassbox-sim` on `PATH` or in known build directories)
+6. Simulator version compatibility (rejects `0.0.x` and `unknown` versions)
 
-Each check prints `[OK]` or `[FAIL]` on its own line with detailed remediation guidance. On failure the output ends with a numbered list of all failures so you can address them in one pass.
+All stage-3 failures are collected and reported together:
 
-**Example output:**
-
-```sh
-# All checks pass:
-glassbox debug --dry-run --network testnet 5c0a1234...ef7890ab
-
-[OK]   Transaction hash format is valid (64 hex chars)
-[OK]   Network selection: testnet
-[OK]   RPC endpoint reachable (status: healthy)
-[OK]   Simulator binary found: /usr/local/bin/glassbox-sim
-       Version: 1.2.3
-       Version compatibility: OK
-
-Additional environment checks:
-[OK]   Trace output configuration is valid: ./traces/debug.html
-
-Dry-run PASSED: all checks succeeded for transaction 5c0a1234... on testnet
-
-You can now run the full debug command by removing the --dry-run flag.
-
-# Multiple failures with detailed remediation:
-glassbox debug --dry-run --network badnet --compare-network badnet tooshort
-
-[FAIL] Invalid transaction hash format: expected 64 hexadecimal characters
-       Fix: transaction hashes must be 64 lowercase hexadecimal characters
-       Example: 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
-[FAIL] Invalid network "badnet" — must be testnet, mainnet, futurenet, or a custom network defined in config
-       Fix: use --network testnet, --network mainnet, or --network futurenet
-       Or define a custom network in glassbox.toml under [networks]
-[FAIL] --compare-network must be different from --network; both are "badnet"
-       Fix: select a different network for --compare-network to enable cross-network comparison
-       Example: --network testnet --compare-network mainnet
-
-Dry-run FAILED: 3 validation error(s)
-  1. transaction hash: expected 64 hexadecimal characters
-  2. network: invalid network "badnet"
-  3. compare-network: cannot be the same as primary network "badnet"
-
-Recommendation: Fix all errors listed above before executing the debug command.
-For comprehensive diagnostics, run: glassbox doctor
+```
+Dry-run validation FAILED: 2 error(s)
+  1. rpc-url: URL must use http or https scheme, got: ftp
+  2. simulator: binary not found or incompatible
+Error: dry-run validation failed with 2 error(s)
 ```
 
-**Exit code:** `0` on pass, `1` on any validation failure.
+Stage-3 failures are returned as unclassified errors and currently exit with **code 3** (the internal-error bucket), not 1. Treat any non-zero exit as "preflight failed".
+
+**What a passing dry-run does and does not mean:**
+
+A passing dry-run means the flags are well-formed, the simulator binary is present and version-compatible, and the plan renders. It does **not** simulate anything. The rendered plan states this explicitly:
+
+```
+This is a dry-run plan. No network calls, signing, simulator invocations,
+or file writes will be performed.
+```
+
+Specifically, `--dry-run` does **not** exercise:
+
+- Transaction lookup (`getTransaction`) — the hash is never resolved, so a format-valid hash for a nonexistent transaction still passes
+- Ledger state reads (`getLedgerEntries`)
+- RPC endpoint health or reachability — there is no health probe
+- Protocol version negotiation (`--protocol-version` is never checked under dry-run)
+- The simulator itself — a simulator that would crash or fail at runtime is not detected beyond the binary/version string check
+- Signing, publishing, file writes, or the `--watch` polling loop
+
+The only network traffic a dry-run can generate is the stage-1 auto-detection probe when `--network` is omitted. With `--network` set explicitly, `debug --dry-run` makes **zero** RPC calls (enforced by `TestDebugDryRunNoRPCCall` in the integration suite). Note that `--dry-run` always renders the plan as text, even when `--format json` is set.
+
+**Example output (pass):**
+
+```sh
+glassbox debug --dry-run --network testnet 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+```
+
+```
+Execution Plan — debug
+Built at: 2026-10-18T09:30:00Z
+Network:  testnet
+
+Network requests (2):
+  [1] getTransaction               https://soroban-testnet.stellar.org
+      Fetch transaction envelope and result metadata
+  [2] getLedgerEntries             https://soroban-testnet.stellar.org
+      Fetch ledger state entries for simulation
+
+Simulator:
+  Binary: /usr/local/bin/glassbox-sim
+  Mode:   network
+
+Outputs (1):
+  stdout   Text simulation results
+
+This is a dry-run plan. No network calls, signing, simulator invocations,
+or file writes will be performed.
+```
+
+The endpoint shown is the resolved RPC URL: the value of `--rpc-url` when set, otherwise `rpc_url` (or `soroban_rpc_urls[0]`) from config — the default is `https://soroban-testnet.stellar.org`. With `--snapshot` set, the plan lists only `getTransaction` because ledger state comes from the snapshot file instead of the network.
+
+**Example output (stage-3 failure):**
+
+```sh
+glassbox debug --dry-run --network testnet --rpc-url ftp://example.com 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+```
+
+```
+Dry-run validation FAILED: 1 error(s)
+  1. rpc-url: URL must use http or https scheme, got: ftp
+Error: dry-run validation failed with 1 error(s)
+```
+
+**Exit codes:**
+
+| Outcome | Exit code |
+|---|---|
+| Plan rendered (all stages pass) | `0` |
+| Stage-1/2 rejection (flag conflict, bad hash, invalid network, missing hash) | `1` (`VALIDATION_FAILED`) |
+| Stage-3 plan check failure (bad `--rpc-url`, simulator missing/incompatible) | `3` (unclassified error; see note above) |
+
+For environment setup problems, run `glassbox doctor` for a comprehensive health check.
 
 ---
 
@@ -155,7 +280,22 @@ Validated at startup:
 
 ---
 
+## Input Sources
 
+`debug` accepts exactly one primary input. The source determines whether the command needs network access, which flags conflict, and what the plan will contain.
+
+| Source | Network requirement | Example | Validated conflicts |
+|---|---|---|---|
+| Transaction hash | **Online.** `getTransaction` (plus `getLedgerEntries` for ledger state) against `--network`. Network auto-detection probes the three built-in networks when `--network` is omitted. | `glassbox debug 5c0a…90ab` | Hash + `--xdr-file`/`--json-file`; requires `--dry-run`-compatible flags (no local modes) |
+| Hash + `--snapshot` | **Online.** The envelope is still fetched via `getTransaction`; ledger state comes from the snapshot file, so `getLedgerEntries` is skipped. | `glassbox debug --snapshot ./state.json 5c0a…90ab` | Same as hash mode |
+| Hash + `--watch` | **Online.** Polls the network until the transaction appears, then replays it. | `glassbox debug --watch --watch-timeout 60 5c0a…90ab` | `--xdr-file`/`--json-file` (local envelope input); the polling loop is skipped under `--dry-run` |
+| `--xdr-file <path>` / `--json-file <path>` | **Offline.** No RPC calls; the envelope is read from disk. The JSON form may embed `network`, `envelope_xdr`, and `result_meta_xdr`. `--result-meta-file` is only consumed in this mode. | `glassbox debug --xdr-file ./tx.xdr` | Each other, hash argument, `--watch`, `--compare-network`, `--live`, `--dry-run` |
+| `--wasm <path>` | **Offline.** Local replay against mock ledger state; no RPC client is created. | `glassbox debug --wasm ./contract.wasm --args "arg1"` | No hash needed; `--hot-reload` requires it; `--live` and `--dry-run` are rejected |
+| `--demo` | **Offline.** Prints sample output; no RPC calls. | `glassbox debug --demo` | `--live` and `--dry-run` are rejected |
+| `--load-snapshots <registry>` | **Offline.** Replays a saved snapshot registry with no RPC calls. | `glassbox debug --load-snapshots ./registry.json` | No hash needed; `--dry-run` is rejected |
+| No hash and no local mode | **Rejected** during preflight. A hash is required unless one of the local modes above is used. | — | — |
+
+All offline modes are covered by the hermetic integration suite (`integration/offline_journey_test.go`), which fails the test on any outbound dial. The zero-RPC guarantee for hash mode under `--dry-run` is enforced separately by `TestDebugDryRunNoRPCCall` (`integration/rpc_failure_journey_test.go`).
 
 ### WASM replay (no network required)
 
@@ -208,6 +348,8 @@ Replays a previously saved snapshot registry without any network connectivity. S
 | `--trace-verbosity` | `normal` | Trace detail level: `summary`, `normal`, or `verbose`. Invalid values are caught early with the accepted list. |
 | `--export-svg` | _(none)_ | Export the call graph as an SVG file. |
 | `--show-metrics` | `false` | Print RPC and simulation performance metrics after the run (see Performance Metrics below). Cannot be combined with `--dry-run`. |
+| `--timings` | `false` | Print per-phase timing breakdown after the run (stderr for text; structured JSON when `--format json`). Cannot be combined with `--dry-run`. |
+| `--plan` | `false` | Print the execution plan (network requests, files, signing, outputs) and exit without running. Unlike `--dry-run`, `--plan` can be combined with local input modes and does not require a hash. |
 | `--verbose`, `-v` | `false` | Enable verbose logging (equivalent to `--log-level=debug`). |
 
 ---
@@ -292,9 +434,10 @@ When `--show-metrics` is set, a performance summary is printed after the simulat
 **Source discovery in CI:** In non-interactive environments (CI pipelines), the
 interactive stdin prompt is skipped. When all discovery stages fail, an explicit
 error is returned listing every stage that was tried and suggesting
-`--contract-source` or `--skip-source-mapping` as remedies. The `--dry-run`
-flag includes source-discovery pre-flight checks so configuration problems are
-caught before any simulation begins.
+`--contract-source` or `--skip-source-mapping` as remedies. Flag-level source
+validation (`--contract-source` path checks, `--source-alias` JSON parsing)
+runs in the shared command preflight, so it also applies to `--dry-run`; the
+full source-discovery scan itself runs only when a simulation actually starts.
 
 ---
 
@@ -340,7 +483,7 @@ The debug command returns explicit, actionable errors for all common failure mod
 
 | Failure | Error message |
 |---|---|
-| Invalid transaction hash | `invalid transaction hash "…" — expected 64 hexadecimal characters` |
+| Invalid transaction hash | `invalid transaction hash "…": transaction hash must be exactly 64 characters long, got N` — a second line states: `Transaction hashes must be 64 lowercase hexadecimal characters` |
 | Invalid `--network` | `invalid --network "…"; must be one of: testnet, mainnet, futurenet` |
 | Invalid `--compare-network` | `invalid --compare-network "…"; must be one of: testnet, mainnet, futurenet` |
 | Same `--network` and `--compare-network` | `--network and --compare-network must be different networks; both are "…"` |
@@ -357,16 +500,20 @@ The debug command returns explicit, actionable errors for all common failure mod
 | `--mock-ledger-entry` empty value | `--mock-ledger-entry: entry "<entry>" has an empty value` |
 | `--source-alias` not found | `--source-alias: file not found: "<path>"` |
 | `--source-alias` invalid JSON | `--source-alias: failed to parse "<path>" as JSON: …` |
-| Both `--xdr-file` and `--json-file` | `only one of --xdr-file or --json-file may be specified; remove one of the two flags` |
+| Both `--xdr-file` and `--json-file` | `only one of --xdr-file or --json-file may be specified` — followed by `Fix: remove one of the two flags — they provide the same local envelope input` |
 | Hash + local file conflict | `cannot specify both a transaction hash and a local envelope file; use either a hash or --xdr-file/--json-file, not both` |
 | `--watch` with local file | `--watch cannot be used with local envelope input; remove --watch or provide a transaction hash instead` |
+| `--compare-network` with local file | `--compare-network cannot be used with local envelope input` |
+| `--live` with local file | `--live/--latest-ledger cannot be used with local envelope input` |
+| `--live` with `--demo` | `--live/--latest-ledger cannot be used with --demo` |
 | `--dry-run` with `--show-metrics` | `--show-metrics cannot be used with --dry-run; no simulation is executed in dry-run mode` |
-| `--dry-run` with local modes | `--dry-run cannot be combined with --demo, --wasm, --load-snapshots, or local envelope input` |
-| `--dry-run` without hash | `transaction hash is required for --dry-run` |
+| `--dry-run` with `--timings` | `--timings cannot be used with --dry-run; no simulation is executed in dry-run mode` |
+| `--dry-run` with local modes | `--dry-run cannot be combined with --demo, --wasm, --load-snapshots, or local envelope input; --dry-run only validates the network transaction path` |
+| `--dry-run` without hash | `transaction hash is required for --dry-run` — followed by `Usage: glassbox debug --dry-run --network testnet <transaction-hash>` |
 | `--pin-endpoint` mismatch | `--pin-endpoint must match --rpc-url when both are provided; set them to the same URL or remove one` |
 | Invalid `--trace-verbosity` | `invalid --trace-verbosity "…"; must be one of: summary, normal, verbose` |
 | Invalid `--theme` | `invalid --theme "…"; must be one of: dark, light, none, default, …` |
-| Invalid `--format` | `invalid --format "…"; must be one of: text, json` |
+| Invalid `--format` | `invalid --format "…" — must be one of: text, json` |
 | Invalid `--op` value | `--op must be a non-negative integer or omitted; use 0 for the first operation, …` |
 | Missing hash (no local mode) | `transaction hash is required when not using --wasm, --demo, --xdr-file, or --json-file` |
 | RPC connection failure | `RPC connection failed: <underlying error>` |
@@ -439,7 +586,7 @@ When a debug run fails, Glassbox prints an actionable `Hint:` line alongside the
 error, so failures explain how to recover rather than only what went wrong:
 
 ```
-Error: ERST_RPC_CONNECTION_FAILED: RPC connection failed: dial tcp ...
+Error: RPC_CONNECTION_FAILED: RPC connection failed: dial tcp ...
 Hint: The RPC endpoint could not be reached. Check your internet connection and the endpoint, pass a known-good one with --rpc-url <url>, and make sure it serves the selected --network.
 ```
 
@@ -684,3 +831,4 @@ Pins an RPC endpoint URL with the saved session so that when the session is resu
 - [Snapshot deduplication](./snapshot-deduplication.md)
 - [Source mapping](./source-mapping.md)
 - [Audit signing](./audit-signing.md)
+- [Command Security Review Guide](./command-security-review.md) — checklist and worked examples for secrets, paths, network, subprocesses, and output redaction required for every new command

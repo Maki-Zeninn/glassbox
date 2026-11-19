@@ -4,6 +4,51 @@ This document describes the serialization guarantees that make Glassbox audit
 logs suitable for cryptographic verification across runtimes, platforms, and
 time.
 
+## Quick reference
+
+Each rule below links to the conformance test that pins it. Rules marked
+**Go ≠ TS** behave differently in the two implementations; avoid those inputs
+in payloads that must verify across both.
+
+| Rule | Behavior | Go test (`internal/cmd/canonical_test.go`) | TS test (`tests/audit-canonical.test.ts`) |
+|------|----------|--------------------------------------------|-------------------------------------------|
+| Key ordering | Keys sorted at every nesting level (Go `sort.Strings`, byte order) | `TestCanonicalJSON_KeyOrdering`, `TestCanonicalJSON_ComplexNesting` | `sorts keys lexicographically`, `nested objects have sorted keys at every level` |
+| Arrays | Insertion order kept, never sorted | `TestCanonicalJSON_Arrays` | `arrays preserve insertion order` |
+| Whitespace | None: no spaces after `:` / `,`, no newlines | `TestCanonicalJSON_KeyOrdering` | `different key insertion order produces the same canonical string` |
+| Numbers | Shortest round-trip decimal, e.g. `42.5`, `2`, `1e+21`. Go decodes every number to `float64` first, so integers above 2^53 lose precision | `TestCanonicalJSON_DataTypes` (`number`) | — |
+| Control-character escaping | `\n`, `\t`, `\"` use short escapes | `TestCanonicalJSON_DataTypes` (`string with special characters`) | — |
+| HTML characters (**Go ≠ TS**) | Go writes `<`, `>`, `&` as `<`, `>`, `&`; TS writes them literally | — (not asserted) | — (not asserted) |
+| Non-ASCII | Written as raw UTF-8, not `\u` escaped | — | `unicode strings are preserved byte-for-byte` |
+| Empty values | `{}`, `[]`, `""` serialized as-is | `TestCanonicalJSON_EmptyValues` | `empty collections serialize deterministically` |
+| Unsupported values | TS: `NaN`, `Infinity` and `-Infinity` rejected by schema validation before hashing. Go: `json.Marshal` returns an error for NaN/Inf, functions and channels | — | `rejects NaN in input`, `rejects Infinity in state`, `rejects -Infinity in nested value` |
+| Determinism | Same input gives the same bytes and hash on every call | `TestCanonicalJSON_Deterministic`, `TestGenerate_DeterministicHash` | `produces identical bytes across 100 invocations`, `produces identical SHA-256 hashes across 100 invocations` |
+
+### Deterministic example
+
+Input:
+
+```json
+{ "timestamp": "2026-01-01T00:00:00.000Z", "state": { "y": 9, "x": 8 }, "input": { "b": 2, "note": "line\nbreak", "a": 1.5 }, "events": ["E1"] }
+```
+
+Canonical bytes (both implementations):
+
+```
+{"events":["E1"],"input":{"a":1.5,"b":2,"note":"line\nbreak"},"state":{"x":8,"y":9},"timestamp":"2026-01-01T00:00:00.000Z"}
+```
+
+SHA-256 of the canonical bytes:
+
+```
+685fe712f3172d6df328dbd7034bf887f20c7d6523b1d722bc18dd0390b5ad43
+```
+
+To reproduce it:
+
+```bash
+printf '%s' '{"events":["E1"],"input":{"a":1.5,"b":2,"note":"line\nbreak"},"state":{"x":8,"y":9},"timestamp":"2026-01-01T00:00:00.000Z"}' | sha256sum
+```
+
 ## Why canonicalization matters
 
 A signed audit log is only trustworthy if the verifier can reproduce the exact
@@ -140,3 +185,13 @@ All four steps must pass for the log to be considered valid.
 - Adding new **optional** fields to the schema is backward compatible: old
   verifiers that do not know about the new field will fail to verify logs that
   include it (by design — the hash covers all fields).
+
+---
+
+## Architecture Decision Records
+
+The following ADR governs the design decisions documented on this page:
+
+- [ADR-005: Canonicalization Ownership](adr/005-canonicalization-ownership.md) — records why the Go CLI is the canonical form authority, the full invariant specification, the rationale for not adopting full RFC 8785, and the cross-language equivalence testing strategy.
+- [ADR-004: Data Classification and Cross-Boundary Data Flows](adr/004-data-classification.md) — documents that only the 32-byte hash (not the canonical payload bytes) is passed to the signing provider.
+- [ADR-006: Provider Isolation](adr/006-provider-isolation.md) — explains why canonicalization happens in the host process before the digest is handed to any provider.

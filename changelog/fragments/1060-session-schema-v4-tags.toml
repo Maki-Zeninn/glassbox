@@ -1,0 +1,42 @@
+[[changes]]
+type = "feature"
+breaking = false
+summary = "Add session tagging: schema v4 migration, tags_json column, and tag helpers"
+issue = 1060
+pull_request = 0
+
+[[changes.detail]]
+text = """
+Session schema bumped from v3 to v4. The new tags_json column stores a JSON
+array of short operator-assigned labels for programmatic session filtering.
+
+Session store (internal/session/store.go):
+- SchemaVersion constant bumped to 4.
+- sessions table DDL adds: tags_json TEXT NOT NULL DEFAULT '[]'.
+- initSchema calls ensureColumn("sessions", "tags_json", ...) for live upgrades.
+- Save INSERT / ON CONFLICT UPDATE includes tags_json; falls back to '[]' when
+  Data.TagsJSON is empty.
+- Load SELECT and scan include COALESCE(tags_json, '[]'); assigns '[]' when the
+  column is NULL (pre-migration rows).
+- List SELECT and scan updated identically.
+
+Data struct (internal/session/store.go):
+- New TagsJSON string field with JSON tag "tags_json,omitempty".
+
+Schema migration (internal/session/schema.go):
+- New migration step v3 → v4 "backfill tags_json empty array": sets
+  Data.TagsJSON to "[]" for sessions created before the column existed so the
+  Tags() accessor never encounters a NULL value.
+
+Tag helpers (internal/session/tags.go — new file):
+- ValidateTag: enforces lowercase alphanumeric + hyphens/underscores/slash,
+  max 64 chars.
+- Tags(data): JSON-decode Data.TagsJSON → []string (never nil).
+- SetTags(data, tags): validate, deduplicate, encode, store.
+- AddTag(data, tag): idempotent append with limit enforcement.
+- RemoveTag(data, tag): remove by value with not-found error.
+- HasTag(data, tag): O(n) membership check.
+- MaxTags = 32, MaxTagLength = 64.
+
+Tags do not participate in AuditHash (operational metadata, not evidence).
+"""

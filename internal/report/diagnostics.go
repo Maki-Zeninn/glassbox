@@ -5,11 +5,13 @@ package report
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/dotandev/glassbox/internal/telemetry"
 	"github.com/dotandev/glassbox/internal/trace"
 )
 
@@ -34,6 +36,7 @@ type DiagnosticSummary struct {
 }
 
 type DiagnosticReport struct {
+	CorrelationID   string              `json:"correlation_id,omitempty"`
 	GeneratedAt     time.Time           `json:"generated_at"`
 	TransactionHash string              `json:"transaction_hash"`
 	TotalSteps      int                 `json:"total_steps"`
@@ -42,9 +45,16 @@ type DiagnosticReport struct {
 }
 
 func NewDiagnosticReport(t *trace.ExecutionTrace) *DiagnosticReport {
+	return NewDiagnosticReportWithContext(context.Background(), t)
+}
+
+func NewDiagnosticReportWithContext(ctx context.Context, t *trace.ExecutionTrace) *DiagnosticReport {
 	r := &DiagnosticReport{
 		GeneratedAt: time.Now().UTC(),
 		Counts:      map[string]int{},
+	}
+	if ctx != nil {
+		r.CorrelationID = telemetry.CorrelationIDFromContext(ctx)
 	}
 	if t == nil {
 		return r
@@ -63,10 +73,10 @@ func NewDiagnosticReport(t *trace.ExecutionTrace) *DiagnosticReport {
 
 			details := state.Error
 			location := ""
-			if state.SourceRef != nil && state.SourceRef.File != "" {
-				location = state.SourceRef.File
-				if state.SourceRef.Line > 0 {
-					location = fmt.Sprintf("%s:%d", location, state.SourceRef.Line)
+			if state.SourceFile != "" {
+				location = state.SourceFile
+				if state.SourceLine > 0 {
+					location = fmt.Sprintf("%s:%d", location, state.SourceLine)
 				}
 				action += fmt.Sprintf(" Source: %s", location)
 			}
@@ -136,6 +146,9 @@ func (r *DiagnosticReport) JSON() ([]byte, error) {
 func (r *DiagnosticReport) Text() string {
 	var buf bytes.Buffer
 	_, _ = fmt.Fprintf(&buf, "Glassbox Diagnostic Report\n")
+	if r.CorrelationID != "" {
+		_, _ = fmt.Fprintf(&buf, "Correlation ID: %s\n", r.CorrelationID)
+	}
 	_, _ = fmt.Fprintf(&buf, "Transaction: %s\n", r.TransactionHash)
 	_, _ = fmt.Fprintf(&buf, "Steps: %d\n\n", r.TotalSteps)
 	for _, d := range r.Diagnostics {

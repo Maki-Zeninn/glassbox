@@ -4,6 +4,7 @@
 #![allow(clippy::pedantic, clippy::nursery, dead_code)]
 
 pub mod context;
+pub mod deterministic;
 pub mod gas_optimizer;
 pub mod git_detector;
 pub mod horizon;

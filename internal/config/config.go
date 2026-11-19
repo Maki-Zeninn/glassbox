@@ -149,6 +149,9 @@ type Config struct {
 	// TelemetrySampleRate is the fraction of high-frequency trace events to emit [0.0, 1.0].
 	// 1.0 emits all events (default); 0.1 emits ~10%; 0.0 disables trace event telemetry.
 	TelemetrySampleRate float64 `json:"telemetry_sample_rate,omitempty"`
+	// TelemetrySampleRateSet tracks whether the sample rate was explicitly set,
+	// so an explicit 0.0 is not replaced by the default.
+	TelemetrySampleRateSet bool `json:"-"`
 	// MaxTraceDepth is the maximum depth of the call tree before it is truncated.
 	MaxTraceDepth int `json:"max_trace_depth,omitempty"`
 	// ExternalSourceRepos maps local path prefixes to remote GitHub repositories for source links.
@@ -157,6 +160,18 @@ type Config struct {
 	FailureThreshold int `json:"failure_threshold,omitempty"`
 	// RetryTimeout is the duration in seconds to wait before retrying a failed endpoint.
 	RetryTimeout int `json:"retry_timeout,omitempty"`
+	// BuildManifestPath is the path to a glassbox-build-manifest.json file used
+	// for cross-machine source mapping from reproducible builds (Issue #45).
+	// Can also be set via the GLASSBOX_BUILD_MANIFEST environment variable.
+	// The --build-manifest CLI flag takes precedence over this value.
+	BuildManifestPath string `json:"build_manifest_path,omitempty"`
+
+	// Plugin contains plugin execution policy settings.
+	Plugin PluginConfig `json:"plugin,omitempty"`
+}
+
+type PluginConfig struct {
+	AllowUntrusted bool `json:"allow_untrusted,omitempty"`
 }
 
 // -- Constants & Defaults --
@@ -182,6 +197,7 @@ var defaultConfig = &Config{
 	RequestTimeout:      defaultRequestTimeout,
 	TelemetryEnabled:    false,
 	TelemetrySampleRate: 1.0,
+	TelemetryAnonymized: true,
 	MaxCacheSize:        0,
 	MaxTraceDepth:       50,
 	FailureThreshold:    defaultFailureThreshold,
@@ -217,6 +233,9 @@ func DefaultConfig() *Config {
 		CachePath:           defaultConfig.CachePath,
 		Telemetry:           defaultConfig.Telemetry,
 		TelemetryAnonymized: defaultConfig.TelemetryAnonymized,
+		TelemetryEnabled:    defaultConfig.TelemetryEnabled,
+		TelemetryEndpoint:   defaultConfig.TelemetryEndpoint,
+		TelemetrySampleRate: defaultConfig.TelemetrySampleRate,
 		RequestTimeout:      defaultConfig.RequestTimeout,
 		MaxCacheSize:        defaultConfig.MaxCacheSize,
 		MaxTraceDepth:       defaultConfig.MaxTraceDepth,
@@ -452,7 +471,7 @@ func (envParser) Parse(cfg *Config) error {
 			cfg.RetryTimeout = n
 		}
 	}
-	if v := os.Getenv("GLASSBOX_TELEMETRY"); v != "" {
+	if v := os.Getenv("GLASSBOX_TELEMETRY_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.TelemetryEnabled = b
 		}
@@ -463,6 +482,15 @@ func (envParser) Parse(cfg *Config) error {
 	if v := os.Getenv("GLASSBOX_TELEMETRY_SAMPLE_RATE"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.TelemetrySampleRate = f
+			cfg.TelemetrySampleRateSet = true
+		}
+	}
+	if v := os.Getenv("GLASSBOX_BUILD_MANIFEST"); v != "" {
+		cfg.BuildManifestPath = v
+	}
+	if v := os.Getenv("GLASSBOX_PLUGIN_ALLOW_UNTRUSTED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Plugin.AllowUntrusted = b
 		}
 	}
 	return nil
@@ -508,7 +536,7 @@ func (configDefaultsAssigner) Apply(cfg *Config) {
 	if cfg.Telemetry && !cfg.TelemetryAnonymizedConfigured {
 		cfg.TelemetryAnonymized = defaultConfig.TelemetryAnonymized
 	}
-	if cfg.TelemetrySampleRate == 0 {
+	if cfg.TelemetrySampleRate == 0 && !cfg.TelemetrySampleRateSet {
 		cfg.TelemetrySampleRate = defaultConfig.TelemetrySampleRate
 	}
 }

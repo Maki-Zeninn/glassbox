@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/visualizer"
 	"go.lsp.dev/protocol"
 )
@@ -46,6 +47,7 @@ func (s *Server) Initialized(ctx context.Context, params *protocol.InitializedPa
 
 // Shutdown ends the current LSP session.
 func (s *Server) Shutdown(ctx context.Context) error {
+	logger.Logger.Info("LSP server shutting down")
 	return nil
 }
 

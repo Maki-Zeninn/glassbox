@@ -1,0 +1,7 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "latestLedger": 500
+  },
+  "id": 1
+}

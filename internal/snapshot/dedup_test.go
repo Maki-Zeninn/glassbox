@@ -597,3 +597,338 @@ func TestDedupStore_InvalidHashPath(t *testing.T) {
 		t.Error("expected error for nonexistent hash")
 	}
 }
+
+
+// ── Deduplication boundary tests (issue #1233) ──────────────────────────────
+//
+// These tests protect the deduplication boundary: identical ledger states must
+// collapse to a single stored snapshot, while snapshots with even the
+// smallest meaningful ledger-state difference must remain distinct. They
+// also assert that insertion order is not a distinguishing field (the store
+// normalizes entry ordering before hashing) and that retained state survives
+// the dedup round-trip.
+
+// TestContentHash_DedupBoundary_IdenticalCollapseDistinctRemains is the core
+// boundary test. It saves several identical snapshots (varying only metadata
+// such as tx hash, network, and timestamp) and verifies they collapse to one
+// entry. It then saves minimally different snapshots and verifies each
+// remains distinct, with count and retained-state assertions.
+func TestContentHash_DedupBoundary_IdenticalCollapseDistinctRemains(t *testing.T) {
+	dir := t.TempDir()
+	store := NewDedupStore(dir)
+
+	// --- Identical snapshots (varying metadata) should collapse to one ---
+
+	identical := FromMap(map[string]string{
+		"account:GA...":  "balance:1000",
+		"contract:CA...": "data:hello",
+	})
+
+	txVariants := []string{"tx1", "tx2", "tx3", "tx4"}
+	netVariants := []string{"testnet", "mainnet", "futurenet", "testnet"}
+	var firstHash string
+	for i, tx := range txVariants {
+		meta := &ReplayMetadata{
+			GlassboxVersion: "v1.0.0",
+			TxHash:          tx,
+			Network:         netVariants[i],
+			SavedAt:         time.Now().Add(time.Duration(i) * time.Hour),
+		}
+		h, isNew, err := store.SaveWithDedup(meta, identical)
+		if err != nil {
+			t.Fatalf("SaveWithDedup failed for identical variant %d: %v", i, err)
+		}
+		if i == 0 {
+			if !isNew {
+				t.Error("expected first identical save to be new")
+			}
+			firstHash = h
+		} else {
+			if isNew {
+				t.Errorf("expected identical variant %d to be deduplicated, not new", i)
+			}
+			if h != firstHash {
+				t.Errorf("identical variant %d has different hash %s; expected %s", i, h, firstHash)
+			}
+		}
+	}
+
+	// Only one unique snapshot should exist after identical saves.
+	unique, err := store.QueryDedup()
+	if err != nil {
+		t.Fatalf("QueryDedup failed: %v", err)
+	}
+	if unique != 1 {
+		t.Errorf("expected 1 unique snapshot after identical saves, got %d", unique)
+	}
+
+	// --- Minimally different snapshots must remain distinct ---
+
+	// Each variant differs from the baseline by the smallest possible
+	// ledger-state change. None of them should collapse with the baseline.
+	minimalVariants := []struct {
+		name string
+		snap *Snapshot
+	}{
+		{
+			name: "single byte value change",
+			snap: FromMap(map[string]string{
+				"account:GA...":  "balance:1000",
+				"contract:CA...": "data:hello!", // trailing '!' added
+			}),
+		},
+		{
+			name: "value length change",
+			snap: FromMap(map[string]string{
+				"account:GA...":  "balance:1000",
+				"contract:CA...": "data:hell", // shorter by one byte
+			}),
+		},
+		{
+			name: "extra ledger entry",
+			snap: FromMap(map[string]string{
+				"account:GA...":  "balance:1000",
+				"contract:CA...": "data:hello",
+				"account:GB...":  "balance:50", // additional entry
+			}),
+		},
+		{
+			name: "different value for same key",
+			snap: FromMap(map[string]string{
+				"account:GA...":  "balance:999", // 999 instead of 1000
+				"contract:CA...": "data:hello",
+			}),
+		},
+	}
+
+	baselineHash, _, err := ContentHash(&PersistedSnapshot{
+		Metadata: &ReplayMetadata{GlassboxVersion: "v1.0.0", TxHash: "base", Network: "testnet"},
+		Snapshot: identical,
+	})
+	if err != nil {
+		t.Fatalf("ContentHash failed for baseline: %v", err)
+	}
+
+	for _, v := range minimalVariants {
+		meta := &ReplayMetadata{
+			GlassboxVersion: "v1.0.0",
+			TxHash:          "diff-" + v.name,
+			Network:         "testnet",
+		}
+		h, isNew, err := store.SaveWithDedup(meta, v.snap)
+		if err != nil {
+			t.Fatalf("SaveWithDedup failed for variant %q: %v", v.name, err)
+		}
+		if !isNew {
+			t.Errorf("variant %q was deduplicated with baseline; expected distinct", v.name)
+		}
+		if h == baselineHash {
+			t.Errorf("variant %q has same hash as baseline; expected distinct hash", v.name)
+		}
+	}
+
+	// Total unique snapshots: 1 (identical) + 4 (minimal variants) = 5.
+	unique, err = store.QueryDedup()
+	if err != nil {
+		t.Fatalf("QueryDedup failed: %v", err)
+	}
+	if unique != 5 {
+		t.Errorf("expected 5 unique snapshots (1 identical + 4 distinct), got %d", unique)
+	}
+
+	// --- Retained state: loading the baseline hash returns original data ---
+
+	loaded, err := store.LoadByHash(firstHash)
+	if err != nil {
+		t.Fatalf("LoadByHash failed for baseline hash: %v", err)
+	}
+	loadedMap := loaded.Snapshot.ToMap()
+	if loadedMap["account:GA..."] != "balance:1000" {
+		t.Errorf("retained state mismatch for account: got %q, want %q",
+			loadedMap["account:GA..."], "balance:1000")
+	}
+	if loadedMap["contract:CA..."] != "data:hello" {
+		t.Errorf("retained state mismatch for contract: got %q, want %q",
+			loadedMap["contract:CA..."], "data:hello")
+	}
+}
+
+// TestContentHash_DedupBoundary_OrderingInvariance verifies that snapshots
+// with the same ledger entries but in different insertion order produce the
+// same content hash and deduplicate to a single stored file. Entry ordering
+// is not a distinguishing field because the store normalizes (sorts) entries
+// before hashing.
+func TestContentHash_DedupBoundary_OrderingInvariance(t *testing.T) {
+	// Build the same entries in two different orders.
+	snapA := &Snapshot{
+		LedgerEntries: []LedgerEntryTuple{
+			{"zebra", "z-val"},
+			{"alpha", "a-val"},
+			{"middle", "m-val"},
+		},
+	}
+	snapB := &Snapshot{
+		LedgerEntries: []LedgerEntryTuple{
+			{"middle", "m-val"},
+			{"alpha", "a-val"},
+			{"zebra", "z-val"},
+		},
+	}
+
+	meta := &ReplayMetadata{
+		GlassboxVersion: "v1.0.0",
+		TxHash:          "tx-order",
+		Network:         "testnet",
+	}
+
+	hashA, err := ContentHash(&PersistedSnapshot{Metadata: meta, Snapshot: snapA})
+	if err != nil {
+		t.Fatalf("ContentHash A failed: %v", err)
+	}
+	hashB, err := ContentHash(&PersistedSnapshot{Metadata: meta, Snapshot: snapB})
+	if err != nil {
+		t.Fatalf("ContentHash B failed: %v", err)
+	}
+
+	if hashA != hashB {
+		t.Errorf("snapshots with same entries in different order should have same hash; got %s vs %s",
+			hashA, hashB)
+	}
+
+	// Verify they deduplicate in the store.
+	dir := t.TempDir()
+	store := NewDedupStore(dir)
+
+	_, isNewA, err := store.SaveWithDedup(meta, snapA)
+	if err != nil {
+		t.Fatalf("first SaveWithDedup failed: %v", err)
+	}
+	if !isNewA {
+		t.Error("expected first ordered save to be new")
+	}
+
+	_, isNewB, err := store.SaveWithDedup(meta, snapB)
+	if err != nil {
+		t.Fatalf("second SaveWithDedup failed: %v", err)
+	}
+	if isNewB {
+		t.Error("expected reordered snapshot to deduplicate, not create new file")
+	}
+
+	unique, _ := store.QueryDedup()
+	if unique != 1 {
+		t.Errorf("expected 1 unique snapshot for reordered entries, got %d", unique)
+	}
+}
+
+// TestContentHash_DedupBoundary_LinearMemoryDistinguishes verifies that two
+// snapshots with identical ledger entries but different linear memory are
+// NOT collapsed. Linear memory is part of the content hash and a meaningful
+// state difference.
+func TestContentHash_DedupBoundary_LinearMemoryDistinguishes(t *testing.T) {
+	snapNoMem := FromMap(map[string]string{"k": "v"})
+	snapWithMem := FromMapWithOptions(map[string]string{"k": "v"}, BuildOptions{
+		LinearMemory: []byte{0x01, 0x02, 0x03},
+	})
+
+	meta := &ReplayMetadata{
+		GlassboxVersion: "v1.0.0",
+		TxHash:          "tx-mem",
+		Network:         "testnet",
+	}
+
+	hashNo, err := ContentHash(&PersistedSnapshot{Metadata: meta, Snapshot: snapNoMem})
+	if err != nil {
+		t.Fatalf("ContentHash (no mem) failed: %v", err)
+	}
+	hashWith, err := ContentHash(&PersistedSnapshot{Metadata: meta, Snapshot: snapWithMem})
+	if err != nil {
+		t.Fatalf("ContentHash (with mem) failed: %v", err)
+	}
+
+	if hashNo == hashWith {
+		t.Error("snapshots differing only in linear memory should have different hashes")
+	}
+
+	// Verify in the store: both should be stored as distinct files.
+	dir := t.TempDir()
+	store := NewDedupStore(dir)
+
+	_, _, err = store.SaveWithDedup(meta, snapNoMem)
+	if err != nil {
+		t.Fatalf("SaveWithDedup failed for no-mem snapshot: %v", err)
+	}
+	_, isNew, err := store.SaveWithDedup(meta, snapWithMem)
+	if err != nil {
+		t.Fatalf("SaveWithDedup failed for with-mem snapshot: %v", err)
+	}
+	if !isNew {
+		t.Error("expected snapshot with linear memory to be distinct from one without")
+	}
+
+	unique, _ := store.QueryDedup()
+	if unique != 2 {
+		t.Errorf("expected 2 unique snapshots (linear memory distinguishes), got %d", unique)
+	}
+}
+
+// TestContentHash_DedupBoundary_CountAndOrdering asserts the contract that
+// after a mixed sequence of identical and distinct saves, the store reports
+// exactly the expected number of unique hashes, and that the stored hashes
+// are returned in sorted order (a stable, contractual ordering).
+func TestContentHash_DedupBoundary_CountAndOrdering(t *testing.T) {
+	dir := t.TempDir()
+	store := NewDedupStore(dir)
+
+	meta := &ReplayMetadata{
+		GlassboxVersion: "v1.0.0",
+		TxHash:          "tx",
+		Network:         "testnet",
+	}
+
+	// Three distinct snapshots + duplicates of each.
+	states := []map[string]string{
+		{"k": "v1"},
+		{"k": "v2"},
+		{"k": "v3"},
+	}
+
+	for _, state := range states {
+		// Save each distinct snapshot twice with different tx hashes.
+		for _, tx := range []string{"tx-a", "tx-b"} {
+			m := &ReplayMetadata{
+				GlassboxVersion: meta.GlassboxVersion,
+				TxHash:          tx,
+				Network:         "testnet",
+			}
+			if _, _, err := store.SaveWithDedup(m, FromMap(state)); err != nil {
+				t.Fatalf("SaveWithDedup failed: %v", err)
+			}
+		}
+	}
+
+	// 3 distinct snapshots, each saved twice → 3 unique files.
+	unique, err := store.QueryDedup()
+	if err != nil {
+		t.Fatalf("QueryDedup failed: %v", err)
+	}
+	if unique != 3 {
+		t.Errorf("expected 3 unique snapshots, got %d", unique)
+	}
+
+	// GetStoredHashes returns hashes in sorted (ascending) order — a stable,
+	// contractual ordering that callers may rely on.
+	hashes, err := store.GetStoredHashes()
+	if err != nil {
+		t.Fatalf("GetStoredHashes failed: %v", err)
+	}
+	if len(hashes) != 3 {
+		t.Fatalf("expected 3 stored hashes, got %d", len(hashes))
+	}
+	for i := 1; i < len(hashes); i++ {
+		if hashes[i-1] > hashes[i] {
+			t.Errorf("stored hashes not in ascending order: %s > %s at index %d",
+				hashes[i-1], hashes[i], i)
+		}
+	}
+}

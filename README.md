@@ -373,6 +373,8 @@ glassbox version --json
 
 ## Documentation
 
+- **[Troubleshooting Index](docs/troubleshooting-index.md)**: Symptom-oriented index that routes common setup, RPC, source-map, session, and signing symptoms to the right existing troubleshooting page without duplicating procedures.
+- **[Observability Troubleshooting](docs/observability-troubleshooting.md)**: Practical guide to logs, Prometheus metrics, OpenTelemetry traces, telemetry events, correlation IDs, and collection failure diagnosis.
 - **[Source Mapping](docs/source-mapping.md)**: Implementation details for mapping WASM failures to Rust source code.
 - **[JSON CLI Output](docs/json-output.md)**: Machine-readable `--json` / `--format json` options for automation.
 - **[Audit Log Signing](docs/audit-signing.md)**: Software and HSM signing for audit logs.
@@ -383,6 +385,7 @@ glassbox version --json
 - **[Incremental Trace Refresh](docs/incremental-trace-refresh.md)**: Incremental trace viewer state persistence.
 - **[Snapshot Deduplication](docs/snapshot-deduplication.md)**: How ledger snapshots are deduplicated.
 - **[Binding Validation](docs/binding-validation.md)**: ABI binding generation and validation.
+- **[Runtime Binding Validation](docs/runtime-binding-validation.md)**: Runtime validators for command inputs, trace payloads, audit records, and session envelopes.
 - **[Sandboxed Replay](docs/sandboxed-replay.md)**: Isolated WASM replay in a sandboxed environment.
 - **[Session Bookmarking](docs/session-bookmarking.md)**: Persistent session management and bookmarks.
 - **[Session Schema Migration](docs/schema/session-migration-guide.md)**: Schema versions, auto-upgrade, and rows from newer binaries.

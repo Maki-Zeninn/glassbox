@@ -11,6 +11,7 @@ import (
 
 	"github.com/dotandev/glassbox/internal/logger"
 	"github.com/dotandev/glassbox/internal/rpc"
+	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
 )
 
 // RegressionTestResult represents the outcome of a single transaction test.
@@ -200,8 +201,11 @@ func (h *RegressionHarness) testTransaction(
 		return result
 	}
 
-	// Extract ledger entries
-	keys, err := extractLedgerKeysFromXDR(resp.ResultMetaXdr)
+	// Extract ledger keys from the transaction envelope's Soroban footprint.
+	// The footprint (read-only + read-write sets) defines every ledger entry
+	// that the contract touched; these are the keys we need to pre-load so the
+	// simulator can replay the transaction against the correct state.
+	keys, err := extractLedgerKeysFromXDR(resp.EnvelopeXdr)
 	if err != nil {
 		result.ErrorMessage = fmt.Sprintf("failed to extract ledger keys from XDR for %s: %v", txHash, err)
 		return result
@@ -266,8 +270,18 @@ func (h *RegressionHarness) testTransaction(
 	return result
 }
 
-// fetchFailedTransactions retrieves hashes of failed transactions from mainnet.
-// Uses ledger sequence as a starting point for the search.
+// fetchFailedTransactions retrieves hashes of failed Soroban transactions from
+// the Horizon API starting at startSeq (0 = latest ledger). It returns at most
+// count hashes, fetching additional pages as needed.
+//
+// The Horizon transactions endpoint is queried with include_failed=true and
+// order=desc so recent failed transactions surface first. Only transactions
+// that are marked unsuccessful (Successful == false) are included in the
+// returned slice; successful transactions are skipped and do not count against
+// the requested count.
+//
+// A zero startSeq means "start from the most-recent ledger"; callers can pass
+// a non-zero value to anchor the search at an earlier point in ledger history.
 func (h *RegressionHarness) fetchFailedTransactions(
 	ctx context.Context,
 	count int,
@@ -281,20 +295,162 @@ func (h *RegressionHarness) fetchFailedTransactions(
 		"startSeq", startSeq,
 	)
 
-	// Placeholder: in production integrate with Horizon's transactions endpoint:
-	// GET /transactions?limit=200&order=desc&include_failed=true
-	// For now return empty slice — tests that require specific tx hashes
-	// should inject them via the RunFunc on a MockRunner.
+	if h.RPCClient == nil {
+		return nil, fmt.Errorf(
+			"regression harness has no RPC client; " +
+				"call NewRegressionHarness with a valid *rpc.Client",
+		)
+	}
+
+	// Horizon caps a single page at 200 records; use the maximum page size to
+	// minimise round-trips when collecting many transactions.
+	const pageSize = 200
+
+	// Build the initial Horizon transaction request. include_failed=true is
+	// essential — without it Horizon only returns successful transactions.
+	req := horizonclient.TransactionRequest{
+		Limit:          uint(pageSize),
+		Order:          horizonclient.OrderDesc,
+		IncludeFailed:  true,
+	}
+
+	// If the caller has specified a starting ledger, cursor the request to
+	// that ledger's approximate paging token. Horizon uses an opaque cursor
+	// string derived from "<ledgerSeq>-<txIndex>" for transaction pagination.
+	// We construct a coarse token that points to the beginning of startSeq so
+	// the first page contains only transactions at or before that ledger.
+	if startSeq > 0 {
+		// Horizon cursor format: "<ledger_seq * 4096 + tx_index>". Using
+		// tx_index = 0 positions the cursor at the opening of the ledger.
+		req.Cursor = fmt.Sprintf("%d", uint64(startSeq)*4096)
+	}
+
+	// Page through transactions until we have enough or there are no more.
+	for len(txHashes) < count {
+		select {
+		case <-ctx.Done():
+			return txHashes, ctx.Err()
+		default:
+		}
+
+		page, err := h.RPCClient.Horizon.Transactions(req)
+		if err != nil {
+			if len(txHashes) > 0 {
+				// Return what we have so far rather than discarding all results
+				// on a mid-pagination network error.
+				logger.Logger.Warn(
+					"Horizon page fetch failed; returning partial results",
+					"collected", len(txHashes),
+					"error", err,
+				)
+				break
+			}
+			return nil, fmt.Errorf(
+				"failed to fetch transactions from Horizon: %w\n"+
+					"Check your --rpc-url and --network settings, or run "+
+					"'glassbox doctor' to verify network connectivity",
+				err,
+			)
+		}
+
+		records := page.Embedded.Records
+		if len(records) == 0 {
+			// No more transactions available in this direction.
+			logger.Logger.Debug("No more transaction records from Horizon", "collected", len(txHashes))
+			break
+		}
+
+		for _, tx := range records {
+			if len(txHashes) >= count {
+				break
+			}
+			// Only collect actually-failed transactions; skip successful ones.
+			if !tx.Successful {
+				txHashes = append(txHashes, tx.Hash)
+				logger.Logger.Debug(
+					"Found failed transaction",
+					"hash", tx.Hash,
+					"ledger", tx.Ledger,
+				)
+			}
+		}
+
+		// Advance the cursor to the last record on this page for the next
+		// iteration. Horizon's PT (paging token) is the stable cursor to use.
+		lastPT := records[len(records)-1].PagingToken()
+		if lastPT == "" {
+			// No paging token means we cannot advance; stop here.
+			break
+		}
+		req.Cursor = lastPT
+	}
+
+	logger.Logger.Info(
+		"Finished fetching failed transactions",
+		"requested", count,
+		"collected", len(txHashes),
+	)
 	return txHashes, nil
 }
 
-// extractLedgerKeysFromXDR extracts ledger keys from transaction result meta XDR.
-func extractLedgerKeysFromXDR(resultMetaXdr string) ([]string, error) {
-	if resultMetaXdr == "" {
+// extractLedgerKeysFromXDR extracts ledger keys from a transaction envelope XDR.
+// It decodes the envelope and collects the Soroban footprint read-only and
+// read-write keys, which represent the complete ledger key set required to
+// replay the transaction. When the envelope carries no Soroban data (e.g. a
+// classic payment), an empty slice is returned without error.
+//
+// The returned keys are base64-encoded XDR LedgerKey strings, ready to pass
+// directly to rpc.Client.GetLedgerEntries.
+func extractLedgerKeysFromXDR(envelopeXdr string) ([]string, error) {
+	if envelopeXdr == "" {
 		return []string{}, nil
 	}
-	// TODO: Parse XDR to extract actual ledger keys.
-	return []string{}, nil
+
+	decoded, err := DecodeEnvelopeXDR(envelopeXdr)
+	if err != nil {
+		return nil, fmt.Errorf("extractLedgerKeysFromXDR: decode envelope: %w", err)
+	}
+
+	return collectFootprintKeys(decoded), nil
+}
+
+// collectFootprintKeys recursively walks a DecodedSimEnvelope and accumulates
+// all footprint ledger keys (read-only and read-write) into a deduplicated
+// slice. FeeBump envelopes are unwrapped to their inner V1 transaction.
+func collectFootprintKeys(env *DecodedSimEnvelope) []string {
+	if env == nil {
+		return nil
+	}
+
+	// FeeBump: the actual Soroban data lives in the inner transaction.
+	if env.Variant == VariantFeeBump && env.InnerEnvelope != nil {
+		return collectFootprintKeys(env.InnerEnvelope)
+	}
+
+	fp := env.Footprint
+	if fp == nil {
+		return []string{}
+	}
+
+	// Deduplicate in case the same key appears in both read-only and
+	// read-write sets (which is invalid per spec, but defensive is safer).
+	seen := make(map[string]struct{}, len(fp.ReadOnly)+len(fp.ReadWrite))
+	keys := make([]string, 0, len(fp.ReadOnly)+len(fp.ReadWrite))
+
+	for _, k := range fp.ReadOnly {
+		if _, dup := seen[k]; !dup {
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+	for _, k := range fp.ReadWrite {
+		if _, dup := seen[k]; !dup {
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+
+	return keys
 }
 
 // addResult adds a test result to the suite (thread-safe).

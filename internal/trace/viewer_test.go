@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dotandev/glassbox/internal/session"
 )
 
 // captureOutput temporarily redirects stdout so that the supplied function's
@@ -157,6 +159,44 @@ func TestInteractiveViewer_SnapshotIDForStep(t *testing.T) {
 	}
 	if got := viewer.snapshotIDForStep(3); got != "snap-001@2" {
 		t.Fatalf("snapshotIDForStep(3) = %q, want snap-001@2", got)
+	}
+}
+
+func TestInteractiveViewer_SaveAndResetViewerState(t *testing.T) {
+	t.Setenv(session.ViewerStateDirEnv, t.TempDir())
+
+	trace := NewExecutionTrace("tx", 1)
+	trace.AddState(ExecutionState{Operation: "init"})
+	trace.AddState(ExecutionState{Operation: "call", Function: "transfer"})
+	viewer := NewInteractiveViewer(trace)
+
+	viewer.eventFilter = EventTypeAuth
+	viewer.hideStdLib = true
+	viewer.saveViewerState()
+
+	st, ok, err := session.LoadViewerState(viewer.stateFP)
+	if err != nil || !ok {
+		t.Fatalf("expected persisted state after save, got ok=%v err=%v", ok, err)
+	}
+	if st.EventFilter != EventTypeAuth || !st.HideStdLib || st.TxHash != "tx" {
+		t.Fatalf("persisted state mismatch: %+v", st)
+	}
+
+	out := captureOutput(func() {
+		if exit := viewer.handleCommand("reset"); exit {
+			t.Error("reset command should not signal exit")
+		}
+	})
+	if !strings.Contains(strings.ToLower(out), "reset") {
+		t.Errorf("reset command should confirm the reset, got: %s", out)
+	}
+
+	if _, ok, _ := session.LoadViewerState(viewer.stateFP); ok {
+		t.Error("persisted state should be deleted after reset")
+	}
+	if viewer.eventFilter != "" || viewer.hideStdLib {
+		t.Errorf("in-session state should return to defaults, got filter=%q hideStdLib=%v",
+			viewer.eventFilter, viewer.hideStdLib)
 	}
 }
 

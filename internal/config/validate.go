@@ -9,8 +9,12 @@ import (
 	"strings"
 
 	"github.com/dotandev/glassbox/internal/errors"
+	"github.com/dotandev/glassbox/internal/logger"
 )
 
+// maxRequestTimeout is the maximum allowed HTTP request timeout in seconds.
+// 300 s (5 minutes) is a conservative ceiling; Soroban RPC servers typically
+// time out within 30–60 s.
 const maxRequestTimeout = 300
 
 type TimeoutValidator struct{}
@@ -23,6 +27,9 @@ func (TimeoutValidator) Validate(cfg *Config) error {
 		return errors.WrapValidationError(
 			fmt.Sprintf("request_timeout must be at most %d seconds, got %d", maxRequestTimeout, cfg.RequestTimeout),
 		)
+	}
+	if cfg.RequestTimeout > 0 && cfg.RequestTimeout < 5 {
+		logger.Logger.Warn("request_timeout is very low; most RPC calls will time out", "timeout_secs", cfg.RequestTimeout)
 	}
 	return nil
 }

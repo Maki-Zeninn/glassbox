@@ -9,6 +9,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
+// PrintEnvelope formats and prints a DecodedEnvelope to standard output.
 func PrintEnvelope(d *DecodedEnvelope) {
 	fmt.Println("Transaction Type:", d.Type)
 	fmt.Println("Source Account:", maskAccount(d.Source))
@@ -52,6 +53,8 @@ func printOperation(i int, op xdr.Operation) {
 	}
 }
 
+// maskAccount masks the middle of an account ID, returning a truncated version
+// with ellipsis for display purposes.
 func maskAccount(addr string) string {
 	if len(addr) < 8 {
 		return addr

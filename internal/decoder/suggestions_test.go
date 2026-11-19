@@ -135,7 +135,7 @@ func TestAnalyzeEvents_InvalidParameters(t *testing.T) {
 	for _, s := range suggestions {
 		if s.Rule == "invalid_parameters" {
 			found = true
-			if s.Confidence != confidenceHigh {
+			if s.Confidence != ConfidenceHigh {
 				t.Errorf("Expected high confidence for a highly specific match, got: %s", s.Confidence)
 			}
 		}
@@ -268,7 +268,7 @@ func TestFormatSuggestions(t *testing.T) {
 		{
 			Rule:        "test_rule",
 			Description: "Test suggestion",
-			Confidence:  confidenceHigh,
+			Confidence:  ConfidenceHigh,
 		},
 	}
 
@@ -306,7 +306,7 @@ func TestAnalyzeEvents_ConfidenceBasedOnSpecificity(t *testing.T) {
 		Suggestion: Suggestion{
 			Rule:        "specificity_probe",
 			Description: "Potential Fix: Review timeout configuration.",
-			Confidence:  confidenceLow,
+			Confidence:  ConfidenceLow,
 		},
 	})
 
@@ -322,7 +322,7 @@ func TestAnalyzeEvents_ConfidenceBasedOnSpecificity(t *testing.T) {
 				Topics:     []string{"warning"},
 				Data:       "timeout while waiting",
 			}},
-			confidence: confidenceLow,
+			confidence: ConfidenceLow,
 		},
 		{
 			name: "medium specificity multiple keywords",
@@ -331,7 +331,7 @@ func TestAnalyzeEvents_ConfidenceBasedOnSpecificity(t *testing.T) {
 				Topics:     []string{"warning", "deadline-near"},
 				Data:       "timeout while waiting",
 			}},
-			confidence: confidenceMedium,
+			confidence: ConfidenceMedium,
 		},
 		{
 			name: "high specificity event check and exact keyword",
@@ -340,7 +340,7 @@ func TestAnalyzeEvents_ConfidenceBasedOnSpecificity(t *testing.T) {
 				Topics:     []string{"timeout_signal", "deadline"},
 				Data:       "timeout while waiting",
 			}},
-			confidence: confidenceHigh,
+			confidence: ConfidenceHigh,
 		},
 	}
 

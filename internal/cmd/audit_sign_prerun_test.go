@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dotandev/glassbox/internal/signer"
 )
 
 // ---- validateAuditSignProvenanceFlags ----------------------------------------
@@ -150,7 +152,7 @@ func TestAuditSignPreRunE_ValidProvenancePasses(t *testing.T) {
 // ── Enhanced PKCS#11 input validation ─────────────────────────────────────
 
 func TestValidatePKCS11SignInputs_MutuallyExclusiveKeySelectors(t *testing.T) {
-	cfg := Pkcs11Config{
+	cfg := signer.Pkcs11Config{
 		ModulePath: "/usr/lib/softhsm/libsofthsm2.so",
 		PIN:        "1234",
 		KeyLabel:   "mykey",
@@ -172,7 +174,7 @@ func TestValidatePKCS11SignInputs_MutuallyExclusiveKeySelectors(t *testing.T) {
 }
 
 func TestValidatePKCS11SignInputs_MissingBothKeySelectors(t *testing.T) {
-	cfg := Pkcs11Config{
+	cfg := signer.Pkcs11Config{
 		ModulePath: "/usr/lib/softhsm/libsofthsm2.so",
 		PIN:        "1234",
 	}
@@ -189,7 +191,7 @@ func TestValidatePKCS11SignInputs_MissingBothKeySelectors(t *testing.T) {
 }
 
 func TestValidatePKCS11SignInputs_KeyLabelOnly_Accepts(t *testing.T) {
-	cfg := Pkcs11Config{
+	cfg := signer.Pkcs11Config{
 		ModulePath: "/usr/lib/softhsm/libsofthsm2.so",
 		PIN:        "1234",
 		KeyLabel:   "mykey",
@@ -200,7 +202,7 @@ func TestValidatePKCS11SignInputs_KeyLabelOnly_Accepts(t *testing.T) {
 }
 
 func TestValidatePKCS11SignInputs_KeyIDOnly_Accepts(t *testing.T) {
-	cfg := Pkcs11Config{
+	cfg := signer.Pkcs11Config{
 		ModulePath: "/usr/lib/softhsm/libsofthsm2.so",
 		PIN:        "1234",
 		KeyIDHex:   "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
@@ -211,7 +213,7 @@ func TestValidatePKCS11SignInputs_KeyIDOnly_Accepts(t *testing.T) {
 }
 
 func TestValidatePKCS11SignInputs_InvalidKeyIDHex_Rejects(t *testing.T) {
-	cfg := Pkcs11Config{
+	cfg := signer.Pkcs11Config{
 		ModulePath: "/usr/lib/softhsm/libsofthsm2.so",
 		PIN:        "1234",
 		KeyIDHex:   "not-valid-hex!!!",

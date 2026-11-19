@@ -6,9 +6,11 @@ This directory contains utility scripts for testing, verification, and automatio
 
 ### `verify_issues.sh`
 
-Automated verification script for GitHub issues.
+Automated verification script for GitHub issues and local `issues.md` files.
 
-**Purpose**: Verifies that all issues are created correctly with proper labels and format.
+**Purpose**: Verifies that all issues are created correctly with proper labels,
+required content sections, and no duplicate titles.  The expected issue count
+is configurable to support different backlog wave sizes (default: **120**).
 
 **Prerequisites**:
 1. Install GitHub CLI: https://cli.github.com/
@@ -28,54 +30,45 @@ Automated verification script for GitHub issues.
 **Usage**:
 
 ```bash
-# Basic verification
+# Basic verification (expects 120 issues with label new_for_wave)
 ./scripts/verify_issues.sh
 
-# Verify and export issues to JSON
+# Override expected count at runtime (e.g. a 40-item wave)
+./scripts/verify_issues.sh --count 40
+
+# Override via environment variable (useful in CI)
+GLASSBOX_ISSUE_COUNT=40 ./scripts/verify_issues.sh
+
+# Verify and export fetched issues to JSON
 ./scripts/verify_issues.sh --export
+
+# Validate only a local issues.md without network access
+./scripts/verify_issues.sh --local-only --file issues.md
+
+# Combine: check GitHub AND validate a local file
+./scripts/verify_issues.sh --file issues.md
 ```
+
+**Options**:
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--count N` | Expected issue count | `120` (or `$GLASSBOX_ISSUE_COUNT`) |
+| `--label LABEL` | GitHub label to filter on | `new_for_wave` |
+| `--repo OWNER/REPO` | Target repository | `pugsley76/glassbox` |
+| `--file PATH` | Local issues.md to parse | auto-detected if `issues.md` exists |
+| `--export` | Write fetched issues to `issues_export.json` | off |
+| `--local-only` | Skip GitHub API; only validate `--file` | off |
 
 **What it checks**:
--  Issue count (expects 40 issues)
--  All issues have `new_for_wave` label
--  Issue format compliance (spot-checks first 5 issues)
--  Required sections present:
-  - Requirements and Context
-  - Success Criteria
-  - Suggested Execution
-
-**Output**:
-```
-=========================================
-GitHub Issues Verification Script
-=========================================
-
-[OK] GitHub CLI found
-[OK] Authenticated with GitHub
-
-Checking issues with label 'new_for_wave'...
-Found: 40 issues
-Expected: 40 issues
-
-[OK] Issue count matches expected
-
-Fetching issue details...
-
-Verifying labels...
-[OK] All issues have the 'new_for_wave' label
-
-Spot-checking issue format (first 5 issues)...
-[OK] All spot-checked issues have correct format
-
-=========================================
-Verification Summary
-=========================================
-[OK] Issue count: 40/40
-[OK] Labels applied correctly
-[OK] Format checks passed
-
- All verifications passed!
-```
+- Issue count matches expected value
+- All issues have the `new_for_wave` label
+- No duplicate issue titles
+- Required sections present in every issue (no checkbox syntax required):
+  - `Description`
+  - `Work to be done`
+  - `Implementation procedure`
+  - `Acceptance criteria`
 
 **Troubleshooting**:
 
@@ -91,10 +84,45 @@ Verification Summary
 
 - **Error: Issue count mismatch**
   - Check if all issues were created
+  - Override with `--count N` or `GLASSBOX_ISSUE_COUNT=N` for a different wave size
   - Verify the label name is correct
-  - Check repository name
 
-## Manual Verification
+### `index_regression_fixtures.sh`
+
+Builds and validates a repository-wide regression fixture index at
+`test/regression/fixture_index.json`.
+
+**Purpose**: Provides a single authoritative catalogue of every fixture across
+all seven regression layers (`rpc`, `trace`, `sourcemap`, `session`, `audit`,
+`replay`, `cli`).  The index records each fixture's path, layer, failure class,
+issue/PR reference, schema version, and test name.  CI fails on orphaned
+entries, duplicates, or missing issue references.
+
+**Usage**:
+
+```bash
+# Regenerate the index
+./scripts/index_regression_fixtures.sh
+
+# Validate an existing index without regenerating (CI mode)
+./scripts/index_regression_fixtures.sh --check-only
+
+# Use a non-default fixtures directory
+./scripts/index_regression_fixtures.sh --fixtures-dir my/fixtures
+
+# Write index to a custom location
+./scripts/index_regression_fixtures.sh --output /tmp/index.json
+```
+
+**What it checks**:
+- Every fixture has a recognised layer name
+- Every fixture filename contains an issue or PR reference (e.g. `issue123`)
+- No duplicate fixture IDs within the same layer
+- All indexed files exist on disk
+
+---
+
+
 
 If you prefer manual verification using GitHub API:
 

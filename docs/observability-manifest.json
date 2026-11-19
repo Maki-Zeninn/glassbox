@@ -1,0 +1,69 @@
+{
+  "schema_version": "1",
+  "description": "Source-of-truth manifest for all public observability signals emitted by Glassbox. CI validates that documentation tables and examples match this file.",
+  "prometheus_metrics": [
+    {
+      "name": "remote_node_last_response_timestamp_seconds",
+      "type": "Gauge",
+      "labels": ["node_address", "network"],
+      "description": "Unix timestamp of last successful RPC response",
+      "stability": "stable",
+      "documented_in": ["docs/observability-troubleshooting.md"]
+    },
+    {
+      "name": "remote_node_response_total",
+      "type": "Counter",
+      "labels": ["node_address", "network", "status"],
+      "description": "Total RPC responses by status (success/error)",
+      "stability": "stable",
+      "documented_in": ["docs/observability-troubleshooting.md"]
+    },
+    {
+      "name": "remote_node_response_duration_seconds",
+      "type": "Histogram",
+      "labels": ["node_address", "network"],
+      "description": "RPC response latency",
+      "stability": "stable",
+      "documented_in": ["docs/observability-troubleshooting.md"]
+    },
+    {
+      "name": "simulation_execution_total",
+      "type": "Counter",
+      "labels": ["status"],
+      "description": "Total simulation executions by status",
+      "stability": "stable",
+      "documented_in": ["docs/observability-troubleshooting.md"]
+    }
+  ],
+  "progress_event_phases": [
+    { "name": "init",     "description": "Command initialisation (flag validation, telemetry setup)" },
+    { "name": "fetch",    "description": "Fetching the transaction envelope from the network" },
+    { "name": "simulate", "description": "Running the local simulator" },
+    { "name": "analyze",  "description": "Post-simulation analysis (security, token flows, suggestions)" },
+    { "name": "export",   "description": "Writing trace or snapshot output files" },
+    { "name": "done",     "description": "Terminal event — command completed successfully" }
+  ],
+  "progress_event_statuses": [
+    { "name": "start",    "terminal": false, "description": "Phase has begun" },
+    { "name": "complete", "terminal": true,  "description": "Phase completed without error" },
+    { "name": "error",    "terminal": true,  "description": "Phase failed; error_code is always populated" },
+    { "name": "skipped",  "terminal": true,  "description": "Phase was intentionally bypassed" }
+  ],
+  "progress_event_fields": [
+    { "name": "operation_id", "type": "string", "required": true,  "sensitive": false },
+    { "name": "phase",        "type": "string", "required": true,  "sensitive": false },
+    { "name": "status",       "type": "string", "required": true,  "sensitive": false },
+    { "name": "timestamp",    "type": "string", "required": true,  "sensitive": false },
+    { "name": "message",      "type": "string", "required": false, "sensitive": false },
+    { "name": "error_code",   "type": "string", "required": false, "sensitive": false },
+    { "name": "meta",         "type": "object", "required": false, "sensitive": false }
+  ],
+  "stable_error_codes": [
+    { "code": "invalid_dry_run_flags",  "phase": "init",     "description": "--dry-run combined with incompatible flags" },
+    { "code": "rpc_fetch_failed",       "phase": "fetch",    "description": "Network fetch of transaction failed" },
+    { "code": "simulation_failed",      "phase": "simulate", "description": "Simulator returned an error" },
+    { "code": "export_failed",          "phase": "export",   "description": "Writing trace output file failed" },
+    { "code": "operation_cancelled",    "phase": "*",        "description": "Operation was cancelled by the user or context" }
+  ],
+  "deprecations": []
+}

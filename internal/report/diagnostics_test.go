@@ -48,12 +48,8 @@ func TestDiagnosticReport_WithSourceMapping_IncludesLocation(t *testing.T) {
 		Operation:  "invoke",
 		ContractID: "CTEST",
 		Error:      "panic: index out of bounds",
-		SourceRef: &trace.SourceRef{
-			File:     "src/contract.rs",
-			Line:     42,
-			Column:   10,
-			Function: "transfer",
-		},
+		SourceFile: "src/contract.rs",
+		SourceLine: 42,
 	})
 
 	r := NewDiagnosticReport(tr)
@@ -87,4 +83,26 @@ func TestDiagnosticReport_WithoutSourceMapping_NoSourceHint(t *testing.T) {
 		t.Errorf("action should not include source hint when no SourceRef, got: %s", d.Action)
 	}
 }
+
+func TestDiagnosticReport_CorrelationID(t *testing.T) {
+	ctx, corrID := telemetry.EnsureCorrelationID(nil)
+	tr := trace.NewExecutionTrace("tx_corr", 0)
+
+	report := NewDiagnosticReportWithContext(ctx, tr)
+	if report.CorrelationID != corrID {
+		t.Fatalf("expected CorrelationID %q, got %q", corrID, report.CorrelationID)
+	}
+
+	text := report.Text()
+	if !strings.Contains(text, "Correlation ID: "+corrID) {
+		t.Errorf("expected text report to contain correlation ID, got:\n%s", text)
+	}
+
+	jsonBytes, err := report.JSON()
+	if err != nil {
+		t.Fatalf("JSON marshal error: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), `"correlation_id": "`+corrID+`"`) {
+		t.Errorf("expected JSON report to contain correlation_id field, got:\n%s", string(jsonBytes))
+	}
 }

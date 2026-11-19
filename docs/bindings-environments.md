@@ -263,3 +263,12 @@ Flags:
       --debug-metadata     Emit ABI metadata objects and withDebugMetadata() wrappers
       --wasm-source <path> Source path hint embedded in debug metadata
 ```
+
+---
+
+## Architecture Decision Records
+
+The following ADRs govern the design decisions behind multi-environment bindings:
+
+- [ADR-003: Trust Boundaries and Component Trust Levels](adr/003-trust-boundaries.md) — classifies browser-targeted bindings as Tier 5 (restricted, no subprocess access) and documents the controls — `child_process`/`fs`/`path` exclusion, fetch-API-only simulation — that apply in the browser runtime.
+- [ADR-004: Data Classification and Cross-Boundary Data Flows](adr/004-data-classification.md) — documents Boundary G (TypeScript Bindings → RPC) and confirms that no CLI host process is involved in browser-based simulation requests.

@@ -1,0 +1,14 @@
+{
+  "_comment": "Reproduces issue #230 session variant: session with blank TxHash must be rejected by ValidateIntegrity with a human-readable error, not a raw SQL constraint violation. Referenced by TestRegression_Session_MissingTxHash_ValidationFails.",
+  "_failure_class": "missing-field-raw-error",
+  "_issue": "230",
+  "id": "sess_test_5c0a1234",
+  "tx_hash": "",
+  "network": "testnet",
+  "status": "active",
+  "created_at": "2026-01-01T00:00:00Z",
+  "last_access_at": "2026-01-01T00:00:00Z",
+  "envelope_xdr": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "result_meta_xdr": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "schema_version": 3
+}

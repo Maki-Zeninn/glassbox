@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dotandev/glassbox/internal/session"
 	"github.com/dotandev/glassbox/internal/simulator"
 	"github.com/spf13/cobra"
 )
@@ -68,7 +67,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 
 func loadSimulationResponse(cmd *cobra.Command, id string) (*simulator.SimulationResponse, error) {
 	if id != "" {
-		store, err := session.NewStore()
+		store, err := openSessionStore()
 		if err != nil {
 			return nil, fmt.Errorf("failed to open session store: %w", err)
 		}

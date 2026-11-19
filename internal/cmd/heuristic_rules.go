@@ -5,7 +5,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"github.com/dotandev/glassbox/internal/heuristic"
@@ -61,7 +60,7 @@ Examples:
 	RunE: runHeuristicList,
 }
 
-func runHeuristicList(_ *cobra.Command, _ []string) error {
+func runHeuristicList(cmd *cobra.Command, _ []string) error {
 	engine, err := resolveEngine(heuristicListRules, heuristicListRulesDir)
 	if err != nil {
 		return err
@@ -71,11 +70,11 @@ func runHeuristicList(_ *cobra.Command, _ []string) error {
 	rules := rs.Rules()
 
 	if len(rules) == 0 {
-		fmt.Println("No rules loaded.")
+		fmt.Fprintln(cmd.OutOrStdout(), "No rules loaded.")
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "PRIORITY\tID\tSEVERITY\tMATCH\tSOURCE\tDESCRIPTION")
 	fmt.Fprintln(w, "--------\t--\t--------\t-----\t------\t-----------")
 	for _, r := range rules {
@@ -116,14 +115,14 @@ Examples:
 	RunE: runHeuristicValidate,
 }
 
-func runHeuristicValidate(_ *cobra.Command, args []string) error {
+func runHeuristicValidate(cmd *cobra.Command, args []string) error {
 	allOK := true
 	for _, path := range args {
 		if err := heuristic.ValidateRuleFile(path); err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL %s: %v\n", path, err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "FAIL %s: %v\n", path, err)
 			allOK = false
 		} else {
-			fmt.Printf("OK   %s\n", path)
+			fmt.Fprintf(cmd.OutOrStdout(), "OK   %s\n", path)
 		}
 	}
 	if !allOK {

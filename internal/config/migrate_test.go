@@ -73,6 +73,90 @@ rpc_url = "https://example.com"
 	}
 }
 
+// ── TestMigration_Idempotent ─────────────────────────────────────────────────
+// Issue 102: each migration function must be idempotent — applying it twice
+// must produce the same result as applying it once.  This guards against
+// accidental data corruption when a schema version bump is missed and the
+// migration runs a second time on already-migrated content.
+
+func TestMigration_Idempotent(t *testing.T) {
+	// migrateV0ToV1 is the only migration step at present.  For each new
+	// migration added to migrate.go, add a corresponding sub-test here.
+	t.Run("migrateV0ToV1", func(t *testing.T) {
+		inputs := []struct {
+			name    string
+			content string
+		}{
+			{
+				name:    "plain config without schema_version",
+				content: "rpc_url = \"https://rpc.example.com\"\nnetwork = \"testnet\"\n",
+			},
+			{
+				name:    "config with comments and no schema_version",
+				content: "# Glassbox config\nrpc_url = \"https://rpc.example.com\"\nnetwork = \"testnet\"\n",
+			},
+			{
+				name:    "empty file",
+				content: "",
+			},
+			{
+				name:    "comments-only file",
+				content: "# Just a comment\n",
+			},
+		}
+
+		for _, tc := range inputs {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				// First application: should migrate.
+				out1, changed1, diag1 := migrateV0ToV1(tc.content)
+				_ = diag1
+
+				// A non-empty input without schema_version should be changed on the first call.
+				// (Empty content is a special case that may produce an empty result.)
+				_ = changed1
+
+				// Second application on the already-migrated content must be a no-op.
+				out2, changed2, diag2 := migrateV0ToV1(out1)
+				if changed2 {
+					t.Errorf("second application of migrateV0ToV1 reported changed=true; migration is not idempotent")
+				}
+				if out2 != out1 {
+					t.Errorf("second application changed content:\nbefore:\n%s\nafter:\n%s", out1, out2)
+				}
+				_ = diag2
+			})
+		}
+	})
+
+	// Idempotency via the public MigrateConfig API (end-to-end).
+	t.Run("MigrateConfig_public_API", func(t *testing.T) {
+		inputs := []string{
+			"rpc_url = \"https://rpc.example.com\"\n",
+			"# comment\nrpc_url = \"https://rpc.example.com\"\nnetwork = \"testnet\"\n",
+			"",
+		}
+		for _, content := range inputs {
+			out1, r1, err := MigrateConfig(content)
+			if err != nil {
+				t.Fatalf("first MigrateConfig call failed: %v", err)
+			}
+			_ = r1
+
+			out2, r2, err := MigrateConfig(out1)
+			if err != nil {
+				t.Fatalf("second MigrateConfig call failed: %v", err)
+			}
+			if r2.Changed {
+				t.Errorf("second MigrateConfig call reports Changed=true; not idempotent for input %q", content)
+			}
+			if out2 != out1 {
+				t.Errorf("second MigrateConfig call modified content:\nbefore:\n%s\nafter:\n%s", out1, out2)
+			}
+		}
+	})
+}
+
 // ── MigrateConfig — already current ─────────────────────────────────────────
 
 func TestMigrateConfig_AlreadyCurrent_NoChange(t *testing.T) {

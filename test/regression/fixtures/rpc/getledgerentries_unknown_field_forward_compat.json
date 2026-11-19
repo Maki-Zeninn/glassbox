@@ -1,0 +1,16 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "latestLedger": 500,
+    "entries": [
+      {
+        "key": "AAAA",
+        "xdr": "BBBB",
+        "lastModifiedLedger": 400,
+        "futureMetadata": "some_future_metadata"
+      }
+    ],
+    "futureField": "some_future_value"
+  },
+  "id": 1
+}

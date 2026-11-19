@@ -1,0 +1,114 @@
+# Copyright 2026 Glassbox Users
+# SPDX-License-Identifier: Apache-2.0
+#
+# perf-regression.yml
+#
+# Runs the performance regression threshold suite against the budget JSON.
+# Results are published as CI artifacts so regressions are actionable.
+#
+# The job does NOT block unrelated unit tests: it only fails when a deliberate
+# regression test or a budget violation is detected.  Wall-clock timestamps are
+# never used as pass/fail criteria.
+#
+# Thresholds are defined in internal/perfmetrics/performance_budgets.json.
+# Adjust regression_threshold_percent in that file to tune tolerance.
+
+name: Performance Regression Thresholds
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'internal/perfmetrics/**'
+      - 'internal/rpc/**'
+      - 'internal/trace/**'
+      - 'internal/sourcemap/**'
+      - 'internal/session/**'
+      - 'internal/replay/**'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'internal/perfmetrics/**'
+      - 'internal/rpc/**'
+      - 'internal/trace/**'
+      - 'internal/sourcemap/**'
+      - 'internal/session/**'
+      - 'internal/replay/**'
+
+concurrency:
+  group: perf-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GLASSBOX_TELEMETRY: "false"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Threshold validation (unit-style, no real network)
+  # ─────────────────────────────────────────────────────────────────────────
+  threshold-validation:
+    name: Budget threshold validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run regression threshold tests
+        # -count=1 disables test caching so every run re-evaluates the budgets.
+        # -timeout=5m guards against infinite loops in budget loading.
+        run: |
+          go test -v -count=1 -timeout=5m \
+            -run 'TestRegressionThresholds|TestThresholdReport|TestBudget_Threshold' \
+            ./internal/perfmetrics/...
+
+      - name: Run all budget unit tests
+        run: |
+          go test -v -count=1 -timeout=5m \
+            -run 'TestLoad|TestBudget|TestTraceSizeBudget|TestPerformanceBudgets|TestCheckBudget' \
+            ./internal/perfmetrics/...
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Benchmark suite with artifact upload
+  # ─────────────────────────────────────────────────────────────────────────
+  benchmark-suite:
+    name: Benchmark suite (baseline comparison)
+    runs-on: ubuntu-latest
+    # Run benchmarks only on push to main/develop to avoid noise on every PR.
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run perfmetrics benchmarks
+        # -benchtime=3s for stable measurements; -count=3 for statistical spread.
+        run: |
+          go test -bench=BenchmarkParseJSON_Small \
+            -benchtime=3s -count=3 -benchmem \
+            -timeout=10m \
+            ./internal/perfmetrics/... \
+            | tee bench_results.txt
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench_results.txt
+          retention-days: 30

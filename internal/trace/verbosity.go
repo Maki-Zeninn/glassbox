@@ -37,11 +37,20 @@ func ParseVerbosity(s string) (Verbosity, error) {
 }
 
 // FilterExecutionTrace returns a copy of the trace with states filtered for verbosity.
+//
+// Reviewer comments are carried across intact, but filtering can invalidate
+// what they point at: VerbositySummary strips SourceFile and SourceLine, so
+// source-anchored comments no longer resolve. Call AnnotationRefReport on the
+// returned trace to find those broken anchors — they are reported rather than
+// dropped, so no review history is lost by exporting at a lower verbosity.
 func FilterExecutionTrace(t *ExecutionTrace, v Verbosity) *ExecutionTrace {
 	if t == nil || v == VerbosityVerbose {
 		return t
 	}
 	out := *t
+	// Annotations contain slices and a map; without a deep copy the filtered
+	// trace would share backing storage with the original.
+	out.Annotations = t.Annotations.Clone()
 	filtered := make([]ExecutionState, 0, len(t.States))
 	for _, s := range t.States {
 		filtered = append(filtered, filterState(s, v))

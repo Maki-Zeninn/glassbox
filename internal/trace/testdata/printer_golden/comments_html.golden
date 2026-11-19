@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glassbox Trace Export</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #0b1220; color: #e8eef9; }
+    .header { border-bottom: 1px solid #334155; padding-bottom: 1rem; margin-bottom: 1rem; }
+    .header h1 { margin: 0 0 .25rem; font-size: 1.6rem; }
+    .header p { margin: .25rem 0; color: #94a3b8; }
+    .controls { margin: .75rem 0; }
+    .controls button { margin-right: .5rem; padding: .5rem .75rem; border: none; border-radius: .375rem; cursor: pointer; background: #334155; color: #f8fafc; }
+    details { margin-bottom: .75rem; border: 1px solid #334155; border-radius: .5rem; background: #111827; padding: .75rem; }
+    summary { font-size: 1rem; font-weight: 700; cursor: pointer; }
+    .state-meta { margin-top: .5rem; color: #cbd5e1; }
+    .state-meta span { display: inline-block; margin-right: 1rem; }
+    .field { margin: .35rem 0; }
+    .field strong { color: #e2e8f0; }
+    a { color: #60a5fa; }
+    code { display: inline-block; background: #1e293b; padding: .15rem .3rem; border-radius: .25rem; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Glassbox Trace Export</h1>
+    <p>Transaction: 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab</p>
+    <p>Steps: 1 · Started: 2026-01-01T00:00:00Z · Ended: 2026-01-01T00:00:05Z</p>
+    
+    <div class="field"><strong>Comments:</strong><ul><li>Reviewed by alice</li><li>Budget spike investigated</li></ul></div>
+    
+    
+    <div class="field"><strong>Session metadata:</strong><ul><li><code>network</code>: testnet</li><li><code>session</code>: sess_test_5c0a1234</li></ul></div>
+    
+    <div class="controls">
+      <button onclick="setAll(true)">Expand all</button>
+      <button onclick="setAll(false)">Collapse all</button>
+    </div>
+  </div>
+  
+  <details open>
+    <summary>#0 · contract_call</summary>
+    <div class="state-meta">
+      <span><strong>Operation:</strong> contract_call</span>
+      <span><strong>Event:</strong> contract_call</span>
+      <span><strong>Contract:</strong> CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</span>
+      <span><strong>Function:</strong> transfer</span>
+      
+      
+    </div>
+    <div class="field"><strong>Arguments:</strong> <code>[]</code></div>
+    
+    
+    
+    
+    
+    <div class="field"><strong>Details:</strong>
+      <ul>
+      <li>operation: contract_call</li><li>contract: CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</li><li>function: transfer</li>
+      </ul>
+    </div>
+    
+  </details>
+  
+  <script>
+    function setAll(open) {
+      document.querySelectorAll('details').forEach(function(element) { element.open = open; });
+    }
+  </script>
+</body>
+</html>

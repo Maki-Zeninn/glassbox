@@ -8,6 +8,7 @@
 
 use super::{MockHsmConfig, PublicKey, Signature, Signer, SignerError, SignerInfo};
 use async_trait::async_trait;
+use crate::deterministic::global_seed;
 use ed25519_dalek::{Signer as EdSigner, SigningKey, VerifyingKey};
 use rand::Rng;
 use std::collections::HashMap;
@@ -37,6 +38,15 @@ impl MockHsm {
                 .map_err(|_| SignerError::Config("Invalid seed length".to_string()))?;
             SigningKey::from_bytes(&seed)
         } else {
+            // Use deterministic seed if available, otherwise fall back to OsRng
+            if global_seed().is_enabled() {
+                if let Some(seed) = global_seed().seed() {
+                    let seed_arr: [u8; 32] = seed;
+                    return Ok(SigningKey::from_bytes(&seed_arr).map_err(|_| {
+                        SignerError::Config("Invalid deterministic seed for signing key".to_string())
+                    })?);
+                }
+            }
             let mut csprng = rand::rngs::OsRng;
             SigningKey::generate(&mut csprng)
         };
@@ -77,6 +87,11 @@ impl MockHsm {
         }
         if self.config.failure_rate >= 1.0 {
             return true;
+        }
+        // Use deterministic random if enabled
+        if global_seed().is_enabled() {
+            let val = global_seed().u64() as f64 / u64::MAX as f64;
+            return val < self.config.failure_rate;
         }
         let mut rng = rand::thread_rng();
         rng.gen::<f64>() < self.config.failure_rate

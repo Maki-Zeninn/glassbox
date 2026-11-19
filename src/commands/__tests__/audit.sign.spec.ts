@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { registerAuditCommands } from '../audit';
 import { createAuditSigner } from '../../audit/signing/factory';
 import { AuditLogger } from '../../audit/AuditLogger';
+import { ExitCode } from '../../exit-codes';
 
 jest.mock('../../audit/signing/factory', () => ({
   createAuditSigner: jest.fn(),
@@ -39,7 +40,7 @@ describe('audit:sign --dry-run', () => {
     const processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
     await program.parseAsync(['node','test','audit:sign','--payload','{not-json}','--dry-run']);
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[FAIL] audit signing failed'));
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    expect(processExitSpy).toHaveBeenCalledWith(ExitCode.VALIDATION_ERROR);
     consoleErrorSpy.mockRestore(); processExitSpy.mockRestore();
   });
 
@@ -62,7 +63,7 @@ describe('audit:sign improved validation', () => {
     await program.parseAsync(['node','test','audit:sign','--payload','not-json-at-all']);
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('not valid JSON'));
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('--payload'));
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    expect(processExitSpy).toHaveBeenCalledWith(ExitCode.VALIDATION_ERROR);
     consoleErrorSpy.mockRestore(); processExitSpy.mockRestore();
   });
 
@@ -74,7 +75,7 @@ describe('audit:sign improved validation', () => {
     await program.parseAsync(['node','test','audit:sign','--payload',VALID_PAYLOAD]);
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[FAIL]'));
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Fix the payload'));
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    expect(processExitSpy).toHaveBeenCalledWith(ExitCode.VALIDATION_ERROR);
     consoleErrorSpy.mockRestore(); processExitSpy.mockRestore();
   });
 
@@ -85,7 +86,7 @@ describe('audit:sign improved validation', () => {
     const processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
     await program.parseAsync(['node','test','audit:sign','--payload',VALID_PAYLOAD]);
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('GLASSBOX_AUDIT_PRIVATE_KEY_PEM'));
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    expect(processExitSpy).toHaveBeenCalledWith(ExitCode.CONFIGURATION_ERROR);
     consoleErrorSpy.mockRestore(); processExitSpy.mockRestore();
   });
 
@@ -105,7 +106,7 @@ describe('audit:sign improved validation', () => {
     const processExitSpy = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
     await program.parseAsync(['node','test','audit:sign','--payload','']);
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('not valid JSON'));
-    expect(processExitSpy).toHaveBeenCalledWith(1);
+    expect(processExitSpy).toHaveBeenCalledWith(ExitCode.VALIDATION_ERROR);
     consoleErrorSpy.mockRestore(); processExitSpy.mockRestore();
   });
 });

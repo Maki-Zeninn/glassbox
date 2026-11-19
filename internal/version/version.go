@@ -24,17 +24,23 @@ func IsDev() bool {
 	return Version == "0.0.0-dev"
 }
 
+const shortSHALen = 8
+
 // ShortSHA returns the first 8 characters of CommitSHA, or "unknown" if unset.
 func ShortSHA() string {
-	if len(CommitSHA) >= 8 {
-		return CommitSHA[:8]
+	if len(CommitSHA) >= shortSHALen {
+		return CommitSHA[:shortSHALen]
 	}
 	return CommitSHA
 }
 
 // UserAgent returns a User-Agent / metadata string suitable for RPC headers
-// and diagnostic output: "glassbox/<version> (<commit>)".
+// and diagnostic output: "glassbox/<version> (<commit>)" or
+// "glassbox/<version> (<commit>, <build-date>)".
 func UserAgent() string {
+	if BuildDate != "unknown" {
+		return fmt.Sprintf("glassbox/%s (%s, %s)", Version, ShortSHA(), BuildDate)
+	}
 	return fmt.Sprintf("glassbox/%s (%s)", Version, ShortSHA())
 }
 
@@ -85,6 +91,9 @@ func ValidateVersionString(v string) error {
 					Expected: "MAJOR.MINOR.PATCH with all numeric components",
 				}
 			}
+		}
+		if len(p) > 1 && p[0] == '0' {
+			return &VersionValidationError{Value: v, Reason: fmt.Sprintf("component %d has a leading zero", i+1), Expected: "MAJOR.MINOR.PATCH with no leading zeros"}
 		}
 	}
 

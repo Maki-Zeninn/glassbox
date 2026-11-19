@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dotandev/glassbox/internal/logger"
+	"github.com/dotandev/glassbox/internal/telemetry"
 )
 
 // NewLoggingMiddleware returns a Middleware that logs each outbound HTTP request
@@ -21,10 +22,11 @@ import (
 //   - Retry / failover events:             WARN
 //
 // Each log record includes:
-//   - method     – HTTP verb (GET, POST, …)
-//   - url        – full request URL
-//   - status     – HTTP response status code
-//   - latency_ms – round-trip duration in milliseconds
+//   - method         – HTTP verb (GET, POST, …)
+//   - url            – full request URL
+//   - status         – HTTP response status code
+//   - latency_ms     – round-trip duration in milliseconds
+//   - correlation_id – per-operation correlation ID (if present in context)
 //
 // Errors from the inner transport are logged at ERROR level with an "error" field
 // instead of a status code.
@@ -39,6 +41,11 @@ type loggingTransport struct {
 }
 
 func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	corrID := telemetry.CorrelationIDFromContext(req.Context())
+	if corrID != "" && req.Header.Get("X-Correlation-ID") == "" {
+		req.Header.Set("X-Correlation-ID", corrID)
+	}
+
 	start := time.Now()
 	resp, err := t.next.RoundTrip(req)
 	latencyMs := time.Since(start).Milliseconds()
@@ -53,21 +60,31 @@ func (t *loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			statusCode = resp.StatusCode
 		}
 
-		logger.Logger.Error("http request failed",
+		args := []interface{}{
 			"method", req.Method,
 			"url", req.URL.String(),
 			"latency_ms", latencyMs,
 			"status", statusCode,
 			"error", err,
-		)
+		}
+		if corrID != "" {
+			args = append(args, "correlation_id", corrID)
+		}
+
+		logger.Logger.Error("http request failed", args...)
 		return resp, err
 	}
 
-	logger.Logger.Info("http request completed",
+	args := []interface{}{
 		"method", req.Method,
 		"url", req.URL.String(),
 		"status", resp.StatusCode,
 		"latency_ms", latencyMs,
-	)
+	}
+	if corrID != "" {
+		args = append(args, "correlation_id", corrID)
+	}
+
+	logger.Logger.Info("http request completed", args...)
 	return resp, nil
 }

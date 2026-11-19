@@ -5,6 +5,8 @@ package eventbus
 
 import (
 	"sync"
+
+	"github.com/dotandev/glassbox/internal/logger"
 )
 
 // HandlerID uniquely identifies a registered event listener.
@@ -23,7 +25,8 @@ type EventBus struct {
 	nextID   HandlerID
 }
 
-// New returns a new, ready-to-use EventBus.
+// New returns a new, ready-to-use EventBus. It initializes the outer handler
+// map only; per-topic handler maps are allocated lazily by Subscribe.
 func New() *EventBus {
 	return &EventBus{
 		handlers: make(map[string]map[HandlerID]Handler),
@@ -39,6 +42,8 @@ func (b *EventBus) Subscribe(topic string, handler Handler) HandlerID {
 	b.nextID++
 	id := b.nextID
 
+	// Inner topic maps are created lazily on first Subscribe to avoid
+	// allocating maps for topics that may never be used.
 	if b.handlers[topic] == nil {
 		b.handlers[topic] = make(map[HandlerID]Handler)
 	}
@@ -59,14 +64,23 @@ func (b *EventBus) Unsubscribe(topic string, id HandlerID) {
 		if len(listeners) == 0 {
 			delete(b.handlers, topic)
 		}
+	} else {
+		logger.Logger.Debug("EventBus: Unsubscribe called for unknown topic", "topic", topic)
 	}
 }
 
 // Emit delivers payload to all handlers currently subscribed to topic.
-// Handlers are invoked synchronously in the calling goroutine under a
-// read lock, so they must not themselves call Subscribe or Unsubscribe
-// (doing so would deadlock). For that pattern, dispatch handler calls
-// after releasing the lock — see the note in the package doc.
+// It takes a snapshot of the handler list under a read lock, then releases
+// the lock before invoking each handler, so Emit itself does not block
+// concurrent Subscribe or Unsubscribe calls on other topics.
+//
+// Handlers must not call Subscribe or Unsubscribe on this EventBus; doing so
+// would deadlock because Emit releases its read lock before invoking handlers,
+// but Subscribe acquires a write lock. Schedule any such calls for after the
+// handler returns (e.g. via a goroutine or a deferred work queue).
+//
+// Handlers are invoked synchronously in the calling goroutine; long-running
+// handlers will delay subsequent handlers and the return of Emit.
 func (b *EventBus) Emit(topic string, payload any) {
 	b.mu.RLock()
 	listeners := b.handlers[topic]
@@ -80,7 +94,9 @@ func (b *EventBus) Emit(topic string, payload any) {
 	b.mu.RUnlock()
 
 	for _, h := range snapshot {
-		h(payload)
+		if h != nil {
+			h(payload)
+		}
 	}
 }
 

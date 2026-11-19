@@ -10,14 +10,17 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/dotandev/glassbox/internal/abi"
+	"github.com/dotandev/glassbox/internal/security"
 )
 
 type exportState struct {
 	Step             int
+	StepID           string
 	Summary          string
 	Operation        string
 	EventType        string
@@ -29,10 +32,32 @@ type exportState struct {
 	Error            string
 	SourceFile       string
 	SourceLine       int
+	SourceColumn     int
+	ConfidenceLevel  string
+	ConfidenceReason string
 	GitHubLink       string
 	CostSummary      string
 	CostBreakdown    []string
 	Details          []string
+	// Comments holds the reviewer comments anchored to this step, so every
+	// export format can render a comment next to what it is about.
+	Comments []exportComment
+}
+
+// exportComment is the render-ready projection of a ReviewerComment. Times are
+// pre-formatted and the target is pre-rendered so templates stay declarative.
+type exportComment struct {
+	ID         string
+	Target     string
+	Author     string
+	Body       string
+	Severity   string
+	Resolution string
+	CreatedAt  string
+	UpdatedAt  string
+	// DanglingReason is set only for comments in exportData.DanglingComments
+	// and explains why the target could not be resolved.
+	DanglingReason string
 }
 
 type exportData struct {
@@ -42,11 +67,24 @@ type exportData struct {
 	TotalSteps      int
 	Annotations     TraceAnnotations
 	States          []exportState
+	// TraceComments are reviewer comments targeting the trace as a whole.
+	TraceComments []exportComment
+	// DanglingComments are reviewer comments whose target does not resolve
+	// against this trace. They are rendered in their own section rather than
+	// dropped, so a filtered or migrated export never loses review history.
+	DanglingComments []exportComment
 }
 
 type ExportOptions struct {
 	Comments        []string
 	SessionMetadata map[string]string
+	// ReviewerComments are merged into the trace's own reviewer comments for
+	// this export only, matching how Comments and SessionMetadata behave.
+	ReviewerComments []ReviewerComment
+	// SecretScanMode controls whether secret scanning is enabled and how it behaves
+	SecretScanMode security.ScannerMode
+	// SecretScanOverrides are paths that are allowed to contain secrets (for test fixtures)
+	SecretScanOverrides []string
 }
 
 const traceHTMLTemplate = `<!doctype html>
@@ -56,6 +94,23 @@ const traceHTMLTemplate = `<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Glassbox Trace Export</title>
   <style>
+    /* Issue #542: High-contrast support */
+    @media (prefers-contrast: high) {
+      body { background: #000 !important; color: #fff !important; }
+      details { border-color: #fff !important; background: #111 !important; }
+      .state-meta, .header p { color: #ccc !important; }
+      code { background: #222 !important; color: #fff !important; }
+      a { color: #66c !important; text-decoration: underline !important; }
+    }
+    /* Issue #542: Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    }
+    /* Issue #542: Focus indicators */
+    summary:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    button:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+    a:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+
     body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #0b1220; color: #e8eef9; }
     .header { border-bottom: 1px solid #334155; padding-bottom: 1rem; margin-bottom: 1rem; }
     .header h1 { margin: 0 0 .25rem; font-size: 1.6rem; }
@@ -70,38 +125,86 @@ const traceHTMLTemplate = `<!doctype html>
     .field strong { color: #e2e8f0; }
     a { color: #60a5fa; }
     code { display: inline-block; background: #1e293b; padding: .15rem .3rem; border-radius: .25rem; }
+    .comment { border-left: 3px solid #475569; background: #0f172a; padding: .5rem .75rem; margin: .5rem 0; border-radius: .25rem; }
+    .comment.severity-warning { border-left-color: #f59e0b; }
+    .comment.severity-critical { border-left-color: #ef4444; }
+    .comment.resolution-resolved { opacity: .7; }
+    .comment-head { color: #94a3b8; font-size: .85rem; margin-bottom: .35rem; }
+    .comment-head .author { color: #e2e8f0; font-weight: 700; }
+    .comment-body { white-space: pre-wrap; }
+    .badge { display: inline-block; padding: .05rem .4rem; border-radius: .75rem; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; background: #334155; color: #e2e8f0; margin-right: .35rem; }
+    .badge.severity-warning { background: #78350f; color: #fde68a; }
+    .badge.severity-critical { background: #7f1d1d; color: #fecaca; }
+    .badge.resolution-resolved { background: #14532d; color: #bbf7d0; }
+    .badge.resolution-wontfix { background: #3f3f46; color: #d4d4d8; }
+    .dangling { border-left-color: #ef4444; }
+    .dangling .reason { color: #fca5a5; font-size: .85rem; margin-top: .35rem; }
   </style>
 </head>
 <body>
-  <div class="header">
+  <a href="#trace-content" class="sr-only" accesskey="s">Skip to trace content</a>
+  <div class="header" role="banner">
     <h1>Glassbox Trace Export</h1>
     <p>Transaction: {{ .TransactionHash }}</p>
-    <p>Steps: {{ .TotalSteps }} · Started: {{ .StartTime }} · Ended: {{ .EndTime }}</p>
+    <p>Steps: {{ .TotalSteps }} &middot; Started: {{ .StartTime }} &middot; Ended: {{ .EndTime }}</p>
     {{ if .Annotations.Comments }}
     <div class="field"><strong>Comments:</strong><ul>{{ range .Annotations.Comments }}<li>{{ . }}</li>{{ end }}</ul></div>
     {{ end }}
     {{ if .Annotations.SessionMetadata }}
     <div class="field"><strong>Session metadata:</strong><ul>{{ range $k, $v := .Annotations.SessionMetadata }}<li><code>{{ $k }}</code>: {{ $v }}</li>{{ end }}</ul></div>
     {{ end }}
+    {{ if .TraceComments }}
+    <div class="field"><strong>Reviewer comments on the whole trace:</strong>
+      {{ range .TraceComments }}
+      <div class="comment severity-{{ .Severity }} resolution-{{ .Resolution }}">
+        <div class="comment-head">
+          <span class="badge severity-{{ .Severity }}">{{ .Severity }}</span>
+          <span class="badge resolution-{{ .Resolution }}">{{ .Resolution }}</span>
+          <span class="author">{{ .Author }}</span> on <code>{{ .Target }}</code> · {{ .CreatedAt }}{{ if .UpdatedAt }} (edited {{ .UpdatedAt }}){{ end }}
+        </div>
+        <div class="comment-body">{{ .Body }}</div>
+      </div>
+      {{ end }}
+    </div>
+    {{ end }}
+    {{ if .DanglingComments }}
+    <div class="field"><strong>Reviewer comments with unresolved targets:</strong>
+      {{ range .DanglingComments }}
+      <div class="comment dangling severity-{{ .Severity }}">
+        <div class="comment-head">
+          <span class="badge severity-{{ .Severity }}">{{ .Severity }}</span>
+          <span class="badge resolution-{{ .Resolution }}">{{ .Resolution }}</span>
+          <span class="author">{{ .Author }}</span> on <code>{{ .Target }}</code> · {{ .CreatedAt }}
+        </div>
+        <div class="comment-body">{{ .Body }}</div>
+        <div class="reason">Target not found in this trace: {{ .DanglingReason }}</div>
+      </div>
+      {{ end }}
+    </div>
+    {{ end }}
     <div class="controls">
       <button onclick="setAll(true)">Expand all</button>
       <button onclick="setAll(false)">Collapse all</button>
     </div>
   </div>
+  <main id="trace-content" role="main" aria-label="Execution trace steps">
+  <div role="tree" aria-label="Trace step tree">
   {{ range .States }}
   <details open>
-    <summary>#{{ .Step }} · {{ .Summary }}</summary>
+    <summary>#{{ .Step }} · {{ .Summary }}{{ if .Comments }} · {{ len .Comments }} comment(s){{ end }}</summary>
     <div class="state-meta">
+      <span><strong>Step ID:</strong> <code>{{ .StepID }}</code></span>
       <span><strong>Operation:</strong> {{ .Operation }}</span>
       {{ if .EventType }}<span><strong>Event:</strong> {{ .EventType }}</span>{{ end }}
       {{ if .Contract }}<span><strong>Contract:</strong> {{ .Contract }}</span>{{ end }}
       {{ if .Function }}<span><strong>Function:</strong> {{ .Function }}</span>{{ end }}
       {{ if .SourceFile }}<span><strong>Source:</strong> {{ .SourceFile }}:{{ .SourceLine }}</span>{{ end }}
-      {{ if .GitHubLink }}<span><strong>Link:</strong> <a href="{{ .GitHubLink }}" target="_blank">View on GitHub</a></span>{{ end }}
+      {{ if .ConfidenceLevel }}<span><strong>Confidence:</strong> {{ .ConfidenceLevel }} ({{ .ConfidenceReason }})</span>{{ end }}
+      {{ if .GitHubLink }}<span><strong>Link:</strong> <a href="{{ .GitHubLink }}" target="_blank" rel="noopener" aria-label="View source on GitHub">View on GitHub</a></span>{{ end }}
     </div>
     <div class="field"><strong>Arguments:</strong> <code>{{ .Args }}</code></div>
     {{ if .Return }}<div class="field"><strong>Return:</strong> <code>{{ .Return }}</code></div>{{ end }}
-    {{ if .Error }}<div class="field"><strong>Error:</strong> <code>{{ .Error }}</code></div>{{ end }}
+    {{ if .Error }}<div class="field status-error" role="alert"><strong>Error:</strong> <code>{{ .Error }}</code></div>{{ end }}
     {{ if .CostSummary }}<div class="field"><strong>Cost:</strong> <code>{{ .CostSummary }}</code></div>{{ end }}
     {{ if .CostBreakdown }}
     <div class="field"><strong>Cost breakdown:</strong>
@@ -117,15 +220,65 @@ const traceHTMLTemplate = `<!doctype html>
       </ul>
     </div>
     {{ end }}
+    {{ if .Comments }}
+    <div class="field"><strong>Reviewer comments:</strong>
+      {{ range .Comments }}
+      <div class="comment severity-{{ .Severity }} resolution-{{ .Resolution }}">
+        <div class="comment-head">
+          <span class="badge severity-{{ .Severity }}">{{ .Severity }}</span>
+          <span class="badge resolution-{{ .Resolution }}">{{ .Resolution }}</span>
+          <span class="author">{{ .Author }}</span> on <code>{{ .Target }}</code> · {{ .CreatedAt }}{{ if .UpdatedAt }} (edited {{ .UpdatedAt }}){{ end }}
+        </div>
+        <div class="comment-body">{{ .Body }}</div>
+      </div>
+      {{ end }}
+    </div>
+    {{ end }}
   </details>
   {{ end }}
+  </div>
+  </main>
   <script>
+    // Issue #542: Keyboard navigation + focus management
     function setAll(open) {
-      document.querySelectorAll('details').forEach(function(element) { element.open = open; });
+      document.querySelectorAll('details[role="treeitem"]').forEach(function(element) {
+        element.open = open;
+        element.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
     }
+    document.querySelectorAll('details[role="treeitem"]').forEach(function(el) {
+      el.addEventListener('toggle', function() {
+        el.setAttribute('aria-expanded', el.open ? 'true' : 'false');
+      });
+    });
+    var steps = document.querySelectorAll('details[role="treeitem"]');
+    var currentFocus = 0;
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        currentFocus = Math.min(currentFocus + 1, steps.length - 1);
+        steps[currentFocus].querySelector('summary').focus();
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        currentFocus = Math.max(currentFocus - 1, 0);
+        steps[currentFocus].querySelector('summary').focus();
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        var el = steps[currentFocus];
+        el.open = !el.open;
+        el.setAttribute('aria-expanded', el.open ? 'true' : 'false');
+      }
+    });
   </script>
 </body>
 </html>`
+
+// markdownTemplateFuncs supplies helpers the Markdown template cannot express
+// literally. `tick` returns a backtick: the template is itself a raw string
+// literal, so a literal backtick would terminate it.
+var markdownTemplateFuncs = template.FuncMap{
+	"tick": func() string { return "`" },
+}
 
 const traceMarkdownTemplate = `# Glassbox Trace Export
 
@@ -143,15 +296,33 @@ const traceMarkdownTemplate = `# Glassbox Trace Export
 {{ end }}{{ if .Annotations.SessionMetadata }}## Session Metadata
 {{ range $k, $v := .Annotations.SessionMetadata }}- **{{ $k }}:** {{ $v }}
 {{ end }}
+{{ end }}{{ if .TraceComments }}## Reviewer Comments (whole trace)
+{{ range .TraceComments }}
+- **{{ .Author }}** on {{ tick }}{{ .Target }}{{ tick }} — _{{ .Severity }}_, _{{ .Resolution }}_ ({{ .CreatedAt }}{{ if .UpdatedAt }}, edited {{ .UpdatedAt }}{{ end }})
+
+  {{ .Body }}
+{{ end }}
+{{ end }}{{ if .DanglingComments }}## Reviewer Comments With Unresolved Targets
+
+These comments are preserved but their target is not present in this trace.
+{{ range .DanglingComments }}
+- **{{ .Author }}** on {{ tick }}{{ .Target }}{{ tick }} — _{{ .Severity }}_, _{{ .Resolution }}_ ({{ .CreatedAt }})
+
+  {{ .Body }}
+
+  > Target not found in this trace: {{ .DanglingReason }}
+{{ end }}
 {{ end }}
 {{ range .States }}
 ## Step {{ .Step }}: {{ .Summary }}
 
+- **Step ID:** {{ tick }}{{ .StepID }}{{ tick }}
 - **Operation:** {{ .Operation }}
 {{ if .EventType }}- **Event:** {{ .EventType }}
 {{ end }}{{ if .Contract }}- **Contract:** {{ .Contract }}
 {{ end }}{{ if .Function }}- **Function:** {{ .Function }}
 {{ end }}{{ if .SourceFile }}- **Source:** {{ .SourceFile }}:{{ .SourceLine }}
+{{ end }}{{ if .ConfidenceLevel }}- **Confidence:** {{ .ConfidenceLevel }} ({{ .ConfidenceReason }})
 {{ end }}{{ if .GitHubLink }}- **GitHub:** [View on GitHub]({{ .GitHubLink }})
 {{ end }}- **Arguments:** {{ .Args }}
 {{ if .Return }}- **Return:** {{ .Return }}
@@ -165,6 +336,13 @@ const traceMarkdownTemplate = `# Glassbox Trace Export
   {{ range .Details }}
   - {{ . }}
   {{ end }}
+{{ end }}{{ if .Comments }}
+### Reviewer comments on step {{ .Step }}
+{{ range .Comments }}
+- **{{ .Author }}** on {{ tick }}{{ .Target }}{{ tick }} — _{{ .Severity }}_, _{{ .Resolution }}_ ({{ .CreatedAt }}{{ if .UpdatedAt }}, edited {{ .UpdatedAt }}{{ end }})
+
+  {{ .Body }}
+{{ end }}
 {{ end }}
 
 {{ end }}`
@@ -223,7 +401,10 @@ func ValidateTraceExportParams(trace *ExecutionTrace, format string, outputPath 
 			"  Default is html if not specified during export")
 	} else {
 		normalizedFormat := strings.ToLower(strings.TrimSpace(format))
-		validFormats := map[string]bool{"html": true, "markdown": true, "md": true, "json": true, "text": true}
+		validFormats := map[string]bool{"md": true}
+		for _, f := range SupportedExportFormats() {
+			validFormats[f] = true
+		}
 		if !validFormats[normalizedFormat] {
 			validationErrors = append(validationErrors, fmt.Sprintf(
 				"invalid or unsupported --export-format %q — must be one of: html, markdown, json, text\n"+
@@ -278,24 +459,49 @@ func ValidateTraceExportParams(trace *ExecutionTrace, format string, outputPath 
 	}
 
 	// 7. Validate ExportOptions.Comments count and length
-	if len(opts.Comments) > 100 {
+	if len(opts.Comments) > MaxTraceComments {
 		validationErrors = append(validationErrors, fmt.Sprintf(
-			"too many comments (%d) — maximum is 100 comments per trace export\n"+
+			"too many comments (%d) — maximum is %d comments per trace export\n"+
 				"  Fix: reduce the number of comments or split into multiple exports",
-			len(opts.Comments),
+			len(opts.Comments), MaxTraceComments,
 		))
 	}
 	for i, comment := range opts.Comments {
-		if len(comment) > 10000 {
+		if len(comment) > MaxCommentLength {
 			validationErrors = append(validationErrors, fmt.Sprintf(
-				"comment #%d exceeds maximum length of 10000 characters (got %d)\n"+
+				"comment #%d exceeds maximum length of %d characters (got %d)\n"+
 					"  Fix: shorten the comment or split it into multiple shorter comments",
-				i+1, len(comment),
+				i+1, MaxCommentLength, len(comment),
 			))
 		} else if strings.TrimSpace(comment) == "" {
 			validationErrors = append(validationErrors, fmt.Sprintf(
 				"--comment index %d is empty or whitespace-only\n"+
 					"  Fix: provide non-empty comments or omit empty ones", i))
+		}
+	}
+
+	// 7b. Validate reviewer comments — both the ones already on the trace and
+	// the ones supplied for this export, since either can push the artifact
+	// past the limits. Structural problems are reported per comment so a
+	// single malformed entry does not hide the rest.
+	existing := 0
+	if trace != nil {
+		existing = len(trace.Annotations.ReviewerComments)
+	}
+	if total := existing + len(opts.ReviewerComments); total > MaxTraceComments {
+		validationErrors = append(validationErrors, fmt.Sprintf(
+			"too many reviewer comments (%d) — maximum is %d per trace export\n"+
+				"  The trace carries %d and this export adds %d\n"+
+				"  Fix: resolve and remove obsolete comments, or split the review across exports",
+			total, MaxTraceComments, existing, len(opts.ReviewerComments),
+		))
+	}
+	for i, comment := range opts.ReviewerComments {
+		normalized := comment
+		normalized.Normalize()
+		if err := normalized.Validate(); err != nil {
+			validationErrors = append(validationErrors, fmt.Sprintf(
+				"reviewer comment #%d is invalid: %s", i+1, err.Error()))
 		}
 	}
 
@@ -427,6 +633,17 @@ func ValidateTraceFormatCompatibility(trace *ExecutionTrace, format string) erro
 	return nil
 }
 
+// SupportedExportFormats returns the canonical list of trace export formats.
+// "md" is accepted as an alias for "markdown" but is not listed separately.
+//
+// Adding a format here requires wiring it into ExportExecutionTraceWithOptions,
+// ValidateTraceFormatCompatibility, and the printer golden tests
+// (internal/trace/printer_golden_test.go) — the golden coverage test fails
+// until every listed format has checked-in golden fixtures.
+func SupportedExportFormats() []string {
+	return []string{"html", "markdown", "json", "text"}
+}
+
 func ExportExecutionTrace(trace *ExecutionTrace, format string, outputPath string) error {
 	return ExportExecutionTraceWithOptions(trace, format, outputPath, ExportOptions{})
 }
@@ -448,6 +665,57 @@ func ExportExecutionTraceWithOptions(trace *ExecutionTrace, format string, outpu
 		if te, ok := err.(*TraceInputError); ok {
 			for _, f := range te.Failures {
 				fmt.Fprintf(os.Stderr, "Warning: %s\n", f)
+			}
+		}
+	}
+
+	// Secret scanning — detect and optionally block exports containing secrets
+	if opts.SecretScanMode != "" {
+		scanner := security.NewSecretScanner(opts.SecretScanMode)
+		for _, override := range opts.SecretScanOverrides {
+			scanner.AddOverride(override)
+		}
+
+		// Scan session metadata
+		if len(opts.SessionMetadata) > 0 {
+			result := scanner.ScanMap(opts.SessionMetadata, "session_metadata")
+			if result.HasSecrets {
+				if scanner.ShouldBlockExport(result) {
+					return fmt.Errorf(scanner.GetErrorMessage(result))
+				}
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", scanner.GetErrorMessage(result))
+			}
+		}
+
+		// Scan comments
+		for i, comment := range opts.Comments {
+			location := fmt.Sprintf("comments[%d]", i)
+			finding := scanner.ScanString(comment, location)
+			if finding.Type != "" {
+				result := security.ScanResult{
+					Findings:   []security.SecretFinding{finding},
+					HasSecrets: true,
+				}
+				if scanner.ShouldBlockExport(result) {
+					return fmt.Errorf(scanner.GetErrorMessage(result))
+				}
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", scanner.GetErrorMessage(result))
+			}
+		}
+
+		// Scan reviewer comments
+		for i, comment := range opts.ReviewerComments {
+			location := fmt.Sprintf("reviewer_comments[%d].body", i)
+			finding := scanner.ScanString(comment.Body, location)
+			if finding.Type != "" {
+				result := security.ScanResult{
+					Findings:   []security.SecretFinding{finding},
+					HasSecrets: true,
+				}
+				if scanner.ShouldBlockExport(result) {
+					return fmt.Errorf(scanner.GetErrorMessage(result))
+				}
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", scanner.GetErrorMessage(result))
 			}
 		}
 	}
@@ -483,7 +751,7 @@ func ExportExecutionTraceWithOptions(trace *ExecutionTrace, format string, outpu
 		}
 		content = string(jsonBytes)
 	case "text":
-		content, err = GenerateTracePlainText(trace)
+		content, err = GenerateTracePlainTextWithOptions(trace, opts)
 		if err != nil {
 			return fmt.Errorf("failed to generate plain text trace: %w", err)
 		}
@@ -523,16 +791,7 @@ func GenerateTraceHTMLWithOptions(trace *ExecutionTrace, opts ExportOptions) (st
 	if trace == nil {
 		return "", fmt.Errorf("trace is nil")
 	}
-	annotations := mergeTraceAnnotations(trace.Annotations, opts)
-
-	data := exportData{
-		TransactionHash: trace.TransactionHash,
-		StartTime:       trace.StartTime.Format(time.RFC3339),
-		EndTime:         trace.EndTime.Format(time.RFC3339),
-		TotalSteps:      len(trace.States),
-		Annotations:     annotations,
-		States:          buildExportStates(trace),
-	}
+	data := buildExportData(trace, opts)
 
 	tmpl, err := template.New("trace-html").Parse(traceHTMLTemplate)
 	if err != nil {
@@ -554,18 +813,11 @@ func GenerateTraceMarkdownWithOptions(trace *ExecutionTrace, opts ExportOptions)
 	if trace == nil {
 		return "", fmt.Errorf("trace is nil")
 	}
-	annotations := mergeTraceAnnotations(trace.Annotations, opts)
+	data := buildExportData(trace, opts)
 
-	data := exportData{
-		TransactionHash: trace.TransactionHash,
-		StartTime:       trace.StartTime.Format(time.RFC3339),
-		EndTime:         trace.EndTime.Format(time.RFC3339),
-		TotalSteps:      len(trace.States),
-		Annotations:     annotations,
-		States:          buildExportStates(trace),
-	}
-
-	tmpl, err := template.New("trace-md").Parse(traceMarkdownTemplate)
+	// The template itself is a backtick-delimited raw string, so Markdown code
+	// spans cannot be written literally inside it; `tick` emits the backtick.
+	tmpl, err := template.New("trace-md").Funcs(markdownTemplateFuncs).Parse(traceMarkdownTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse trace export template: %w", err)
 	}
@@ -579,16 +831,29 @@ func GenerateTraceMarkdownWithOptions(trace *ExecutionTrace, opts ExportOptions)
 
 // GenerateTracePlainText renders a shareable plain-text trace with indented hierarchy.
 func GenerateTracePlainText(trace *ExecutionTrace) (string, error) {
+	return GenerateTracePlainTextWithOptions(trace, ExportOptions{})
+}
+
+// GenerateTracePlainTextWithOptions renders a plain-text trace including any
+// comments and session metadata, matching the semantic coverage of the HTML
+// and Markdown exporters (previously the text format silently dropped
+// annotations).
+func GenerateTracePlainTextWithOptions(trace *ExecutionTrace, opts ExportOptions) (string, error) {
 	if trace == nil {
 		return "", fmt.Errorf("trace is nil")
 	}
+	annotations := mergeTraceAnnotations(trace.Annotations, opts)
+	byStep, traceLevel, dangling := buildExportComments(trace, annotations)
 
 	data := exportData{
-		TransactionHash: trace.TransactionHash,
-		StartTime:       trace.StartTime.Format(time.RFC3339),
-		EndTime:         trace.EndTime.Format(time.RFC3339),
-		TotalSteps:      len(trace.States),
-		States:          buildExportStates(trace),
+		TransactionHash:  trace.TransactionHash,
+		StartTime:        trace.StartTime.Format(time.RFC3339),
+		EndTime:          trace.EndTime.Format(time.RFC3339),
+		TotalSteps:       len(trace.States),
+		Annotations:      annotations,
+		States:           buildExportStates(trace, byStep),
+		TraceComments:    traceLevel,
+		DanglingComments: dangling,
 	}
 
 	var buf strings.Builder
@@ -599,8 +864,29 @@ func GenerateTracePlainText(trace *ExecutionTrace) (string, error) {
 	fmt.Fprintf(&buf, "Started:     %s\n", data.StartTime)
 	fmt.Fprintf(&buf, "Ended:       %s\n\n", data.EndTime)
 
+	if len(data.Annotations.Comments) > 0 {
+		buf.WriteString("Comments:\n")
+		for _, c := range data.Annotations.Comments {
+			fmt.Fprintf(&buf, "  - %s\n", c)
+		}
+		buf.WriteString("\n")
+	}
+	if len(data.Annotations.SessionMetadata) > 0 {
+		keys := make([]string, 0, len(data.Annotations.SessionMetadata))
+		for k := range data.Annotations.SessionMetadata {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		buf.WriteString("Session metadata:\n")
+		for _, k := range keys {
+			fmt.Fprintf(&buf, "  - %s: %s\n", k, data.Annotations.SessionMetadata[k])
+		}
+		buf.WriteString("\n")
+	}
+
 	for _, s := range data.States {
 		fmt.Fprintf(&buf, "Step %d: %s\n", s.Step, s.Summary)
+		fmt.Fprintf(&buf, "  Step ID:   %s\n", s.StepID)
 		fmt.Fprintf(&buf, "  Operation: %s\n", s.Operation)
 		if s.EventType != "" {
 			fmt.Fprintf(&buf, "  Event:     %s\n", s.EventType)
@@ -614,6 +900,9 @@ func GenerateTracePlainText(trace *ExecutionTrace) (string, error) {
 		if s.SourceFile != "" {
 			fmt.Fprintf(&buf, "  Source:    %s:%d\n", s.SourceFile, s.SourceLine)
 		}
+		if s.ConfidenceLevel != "" {
+			fmt.Fprintf(&buf, "  Confidence: %s (%s)\n", s.ConfidenceLevel, s.ConfidenceReason)
+		}
 		if s.GitHubLink != "" {
 			fmt.Fprintf(&buf, "  GitHub:    %s\n", s.GitHubLink)
 		}
@@ -624,8 +913,37 @@ func GenerateTracePlainText(trace *ExecutionTrace) (string, error) {
 		if s.Error != "" {
 			fmt.Fprintf(&buf, "  Error:     %s\n", s.Error)
 		}
+		if s.CostSummary != "" {
+			fmt.Fprintf(&buf, "  Cost:      %s\n", s.CostSummary)
+		}
+		for _, line := range s.CostBreakdown {
+			fmt.Fprintf(&buf, "    * %s\n", line)
+		}
 		for _, detail := range s.Details {
 			fmt.Fprintf(&buf, "    - %s\n", detail)
+		}
+		if len(s.Comments) > 0 {
+			buf.WriteString("  Reviewer comments:\n")
+			for _, c := range s.Comments {
+				writePlainTextComment(&buf, "    ", c)
+			}
+		}
+		buf.WriteString("\n")
+	}
+
+	if len(data.TraceComments) > 0 {
+		buf.WriteString("Reviewer comments (whole trace):\n")
+		for _, c := range data.TraceComments {
+			writePlainTextComment(&buf, "  ", c)
+		}
+		buf.WriteString("\n")
+	}
+
+	if len(data.DanglingComments) > 0 {
+		buf.WriteString("Reviewer comments with unresolved targets:\n")
+		for _, c := range data.DanglingComments {
+			writePlainTextComment(&buf, "  ", c)
+			fmt.Fprintf(&buf, "    Target not found in this trace: %s\n", c.DanglingReason)
 		}
 		buf.WriteString("\n")
 	}
@@ -633,9 +951,26 @@ func GenerateTracePlainText(trace *ExecutionTrace) (string, error) {
 	return buf.String(), nil
 }
 
-func buildExportStates(trace *ExecutionTrace) []exportState {
+// writePlainTextComment renders one comment with its target, so the plain-text
+// export associates a comment with what it is about just as clearly as the
+// HTML and Markdown formats do.
+func writePlainTextComment(buf *strings.Builder, indent string, c exportComment) {
+	fmt.Fprintf(buf, "%s- [%s/%s] %s on %s (%s", indent, c.Severity, c.Resolution, c.Author, c.Target, c.CreatedAt)
+	if c.UpdatedAt != "" {
+		fmt.Fprintf(buf, ", edited %s", c.UpdatedAt)
+	}
+	buf.WriteString(")\n")
+	for _, line := range strings.Split(c.Body, "\n") {
+		fmt.Fprintf(buf, "%s    %s\n", indent, line)
+	}
+}
+
+// buildExportStates projects the trace's states into render-ready form.
+// commentsByStep is keyed by state index and may be nil when the trace carries
+// no reviewer comments.
+func buildExportStates(trace *ExecutionTrace, commentsByStep map[int][]exportComment) []exportState {
 	states := make([]exportState, 0, len(trace.States))
-	for _, s := range trace.States {
+	for i, s := range trace.States {
 		details := make([]string, 0)
 		if s.Error != "" {
 			details = append(details, fmt.Sprintf("error: %s", s.Error))
@@ -668,6 +1003,14 @@ func buildExportStates(trace *ExecutionTrace) []exportState {
 			details = append(details, fmt.Sprintf("cost: %s", FormatCostAnnotation(s.Cost)))
 		}
 
+		// A nil return value must render as "absent" in every format; formatting
+		// it with %v would leak a literal "<nil>" into Markdown and HTML output
+		// while the text exporter suppresses it.
+		returnStr := ""
+		if s.ReturnValue != nil {
+			returnStr = fmt.Sprintf("%v", s.ReturnValue)
+		}
+
 		summary := s.Operation
 		if summary == "" {
 			summary = s.EventType
@@ -681,6 +1024,7 @@ func buildExportStates(trace *ExecutionTrace) []exportState {
 
 		states = append(states, exportState{
 			Step:             s.Step,
+			StepID:           StepIDOf(&trace.States[i]),
 			Summary:          summary,
 			Operation:        s.Operation,
 			EventType:        s.EventType,
@@ -688,23 +1032,119 @@ func buildExportStates(trace *ExecutionTrace) []exportState {
 			Function:         s.Function,
 			ContractMetadata: s.ContractMetadata,
 			Args:             fmt.Sprintf("%v", s.Arguments),
-			Return:           fmt.Sprintf("%v", s.ReturnValue),
+			Return:           returnStr,
 			Error:            s.Error,
 			SourceFile:       s.SourceFile,
 			SourceLine:       s.SourceLine,
+			SourceColumn:     s.SourceColumn,
+			ConfidenceLevel:  s.ConfidenceLevel,
+			ConfidenceReason: s.ConfidenceReason,
 			GitHubLink:       s.GitHubLink,
 			CostSummary:      FormatCostAnnotation(s.Cost),
 			CostBreakdown:    FormatCostBreakdown(s.Cost),
 			Details:          details,
+			Comments:         commentsByStep[i],
 		})
 	}
 	return states
+}
+
+// renderComment projects a ReviewerComment into its render-ready form.
+func renderComment(c ReviewerComment) exportComment {
+	out := exportComment{
+		ID:         c.ID,
+		Target:     c.Target.String(),
+		Author:     c.Author,
+		Body:       c.Body,
+		Severity:   string(c.Severity),
+		Resolution: string(c.Resolution),
+		CreatedAt:  c.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	if out.Severity == "" {
+		out.Severity = string(DefaultAnnotationSeverity)
+	}
+	if out.Resolution == "" {
+		out.Resolution = string(DefaultAnnotationResolution)
+	}
+	if !c.UpdatedAt.IsZero() {
+		out.UpdatedAt = c.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+// buildExportComments resolves the annotations against the trace and groups
+// them the way every export format needs them: comments anchored to a step
+// (keyed by state index), comments about the whole trace, and comments whose
+// target no longer resolves.
+//
+// Dangling comments are returned for rendering rather than discarded — an
+// export of a filtered or migrated trace must still carry the full review
+// history, with the broken anchor made visible.
+func buildExportComments(trace *ExecutionTrace, annotations TraceAnnotations) (byStep map[int][]exportComment, traceLevel, dangling []exportComment) {
+	ordered := SortReviewerComments(trace, annotations.ReviewerComments)
+	if len(ordered) == 0 {
+		return nil, nil, nil
+	}
+
+	report := ValidateAnnotationRefs(trace, ordered)
+	byStep = make(map[int][]exportComment)
+	for _, r := range report.Resolved {
+		rendered := renderComment(r.Comment)
+		if r.StepIndex < 0 {
+			traceLevel = append(traceLevel, rendered)
+			continue
+		}
+		byStep[r.StepIndex] = append(byStep[r.StepIndex], rendered)
+	}
+	for _, d := range report.Dangling {
+		rendered := renderComment(d.Comment)
+		rendered.DanglingReason = d.Reason
+		dangling = append(dangling, rendered)
+	}
+	return byStep, traceLevel, dangling
+}
+
+// buildExportData assembles the full render model shared by the HTML,
+// Markdown, and plain-text exporters.
+func buildExportData(trace *ExecutionTrace, opts ExportOptions) exportData {
+	annotations := mergeTraceAnnotations(trace.Annotations, opts)
+	byStep, traceLevel, dangling := buildExportComments(trace, annotations)
+
+	return exportData{
+		TransactionHash:  trace.TransactionHash,
+		StartTime:        trace.StartTime.Format(time.RFC3339),
+		EndTime:          trace.EndTime.Format(time.RFC3339),
+		TotalSteps:       len(trace.States),
+		Annotations:      annotations,
+		States:           buildExportStates(trace, byStep),
+		TraceComments:    traceLevel,
+		DanglingComments: dangling,
+	}
 }
 
 func mergeTraceAnnotations(base TraceAnnotations, opts ExportOptions) TraceAnnotations {
 	out := base
 	if len(opts.Comments) > 0 {
 		out.Comments = append(append([]string(nil), base.Comments...), opts.Comments...)
+	}
+	if len(opts.ReviewerComments) > 0 {
+		// Matched by ID so an export-time comment updates rather than
+		// duplicates one already carried by the trace.
+		merged := append([]ReviewerComment(nil), base.ReviewerComments...)
+		position := make(map[string]int, len(merged))
+		for i, c := range merged {
+			position[c.ID] = i
+		}
+		for _, c := range opts.ReviewerComments {
+			c.Normalize()
+			if i, ok := position[c.ID]; ok {
+				merged[i] = c
+				continue
+			}
+			position[c.ID] = len(merged)
+			merged = append(merged, c)
+		}
+		out.ReviewerComments = merged
 	}
 	if len(opts.SessionMetadata) > 0 {
 		merged := make(map[string]string, len(base.SessionMetadata)+len(opts.SessionMetadata))

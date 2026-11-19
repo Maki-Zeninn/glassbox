@@ -4,7 +4,9 @@
 package simulator
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -86,5 +88,29 @@ func TestSimulationResponseUnmarshalSnapshots(t *testing.T) {
 	}
 	if got := len(resp.OptimizationReport.Snapshots.IDs); got != 1 {
 		t.Fatalf("expected 1 lazy snapshot id, got %d", got)
+	}
+}
+
+func TestLimitedBufferWrite_OverflowReturnsError(t *testing.T) {
+	lb := &limitedBuffer{Buffer: bytes.Buffer{}, limit: 10}
+
+	n, err := lb.Write([]byte("hello"))
+	if err != nil {
+		t.Fatalf("unexpected error on write within limit: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("expected n=5, got %d", n)
+	}
+
+	// Write of 6 bytes would push total to 11, exceeding limit of 10.
+	n, err = lb.Write([]byte("123456"))
+	if err == nil {
+		t.Fatal("expected error when write would exceed limit, got nil")
+	}
+	if n != 0 {
+		t.Errorf("expected n=0 on overflow, got %d", n)
+	}
+	if !strings.Contains(err.Error(), "10") {
+		t.Errorf("expected error message to contain limit value, got %q", err.Error())
 	}
 }

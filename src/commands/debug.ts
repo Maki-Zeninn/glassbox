@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { RPCConfigParser } from '../config/rpc-config';
 import { FallbackRPCClient } from '../rpc/fallback-client';
 import { getLogger, setLogLevel, LogLevel, LogCategory } from '../utils/logger';
+import { ExitCode } from '../exit-codes';
 
 /** A valid Stellar transaction hash is exactly 64 lowercase hex characters. */
 const TX_HASH_RE = /^[0-9a-f]{64}$/i;
@@ -63,19 +64,19 @@ export function registerDebugCommand(program: Command): void {
                 console.error(`[FAIL] Validation error: ${hashErr}`);
                 console.error('       Provide a 64-character hex transaction hash, e.g.:');
                 console.error('         glassbox debug 5c0a1234...ef7890ab');
-                process.exit(1);
+                process.exit(ExitCode.VALIDATION_ERROR);
             }
 
             const { value: timeoutMs, error: timeoutErr } = parsePositiveInt('timeout', options.timeout, 30000);
             if (timeoutErr !== null) {
                 console.error(`[FAIL] Validation error: ${timeoutErr}`);
-                process.exit(1);
+                process.exit(ExitCode.VALIDATION_ERROR);
             }
 
             const { value: retriesCount, error: retriesErr } = parsePositiveInt('retries', options.retries, 3);
             if (retriesErr !== null) {
                 console.error(`[FAIL] Validation error: ${retriesErr}`);
-                process.exit(1);
+                process.exit(ExitCode.VALIDATION_ERROR);
             }
             // ─────────────────────────────────────────────────────────────────
 
@@ -136,16 +137,20 @@ export function registerDebugCommand(program: Command): void {
 
             } catch (error) {
                 const totalDuration = Date.now() - startTime;
+                let exitCode: number = ExitCode.UNKNOWN_ERROR;
                 if (error instanceof Error) {
                     logger.error('Debug failed', error);
                     // Provide actionable guidance for common failure modes.
                     if (error.message.includes('not found') || error.message.includes('404')) {
+                        exitCode = ExitCode.NETWORK_ERROR;
                         console.error('       The transaction was not found on the network.');
                         console.error('       Check the hash and ensure you are querying the correct network.');
                     } else if (error.message.includes('timeout') || error.message.includes('ETIMEDOUT')) {
+                        exitCode = ExitCode.NETWORK_ERROR;
                         console.error(`       The request timed out after ${timeoutMs}ms.`);
                         console.error('       Try increasing --timeout or verify the RPC endpoint is reachable.');
                     } else if (error.message.includes('ECONNREFUSED') || error.message.includes('ENOTFOUND')) {
+                        exitCode = ExitCode.NETWORK_ERROR;
                         console.error('       Could not connect to the RPC endpoint.');
                         console.error('       Check the --rpc URL and your network connectivity.');
                     }
@@ -154,7 +159,7 @@ export function registerDebugCommand(program: Command): void {
                 }
 
                 logger.verbose(LogCategory.PERF, `Failed after ${totalDuration}ms`);
-                process.exit(1);
+                process.exit(exitCode);
             }
         });
 
@@ -192,7 +197,7 @@ export function registerDebugCommand(program: Command): void {
                 } else {
                     console.error('[FAIL] Health check failed: An unknown error occurred');
                 }
-                process.exit(1);
+                process.exit(ExitCode.UNKNOWN_ERROR);
             }
         });
 }

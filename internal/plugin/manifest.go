@@ -49,6 +49,10 @@ const (
 	CapabilityTraceViewer Capability = "trace_viewer"
 	// CapabilityArtifactLoader allows the plugin to load custom artifact formats.
 	CapabilityArtifactLoader Capability = "artifact_loader"
+	// CapabilitySigning allows the plugin to perform cryptographic signing operations.
+	CapabilitySigning Capability = "signing"
+	// CapabilityLogging allows the plugin to emit structured log entries.
+	CapabilityLogging Capability = "logging"
 )
 
 // Permission represents a runtime permission a plugin requires.
@@ -61,6 +65,10 @@ const (
 	PermissionNetwork Permission = "network"
 	// PermissionWriteFS allows the plugin to write to the filesystem.
 	PermissionWriteFS Permission = "write_fs"
+	// PermissionExecuteSubprocess allows the plugin to spawn child processes.
+	PermissionExecuteSubprocess Permission = "execute_subprocess"
+	// PermissionAccessEnv allows the plugin to read environment variables.
+	PermissionAccessEnv Permission = "access_env"
 )
 
 // validCapabilities is the set of recognised capability strings.
@@ -69,13 +77,26 @@ var validCapabilities = map[Capability]bool{
 	CapabilityAnalyzer:       true,
 	CapabilityTraceViewer:    true,
 	CapabilityArtifactLoader: true,
+	CapabilitySigning:        true,
+	CapabilityLogging:        true,
 }
 
 // validPermissions is the set of recognised permission strings.
 var validPermissions = map[Permission]bool{
-	PermissionReadFS:  true,
-	PermissionNetwork: true,
-	PermissionWriteFS: true,
+	PermissionReadFS:             true,
+	PermissionNetwork:            true,
+	PermissionWriteFS:            true,
+	PermissionExecuteSubprocess:  true,
+	PermissionAccessEnv:          true,
+}
+
+// requiredPermissions maps capabilities to the minimum permissions they require.
+// A manifest declaring a capability must also request its required permissions;
+// the loader enforces this mapping before activation.
+var requiredPermissions = map[Capability][]Permission{
+	CapabilitySigning:        {PermissionReadFS, PermissionAccessEnv},
+	CapabilityLogging:        {PermissionWriteFS},
+	CapabilityArtifactLoader: {PermissionReadFS},
 }
 
 // semverRE is a loose semver pattern: MAJOR.MINOR.PATCH with optional pre-release.
@@ -153,6 +174,14 @@ func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Entrypoint) == "" {
 		return fmt.Errorf("entrypoint must not be empty")
 	}
+	// Reject path traversal in entrypoint to prevent loading binaries outside
+	// the plugin directory.
+	if strings.Contains(m.Entrypoint, "..") {
+		return fmt.Errorf("entrypoint must not contain path traversal sequences")
+	}
+	if len(m.Entrypoint) > 256 {
+		return fmt.Errorf("entrypoint path is too long (%d characters, max 256)", len(m.Entrypoint))
+	}
 	if len(m.Capabilities) == 0 {
 		return fmt.Errorf("plugin must declare at least one capability")
 	}
@@ -164,6 +193,20 @@ func (m *Manifest) Validate() error {
 	for _, perm := range m.Permissions {
 		if !validPermissions[perm] {
 			return fmt.Errorf("unknown permission %q", perm)
+		}
+	}
+	// Validate capability-permission mapping: ensure that each capability's
+	// required permissions are declared by the plugin.
+	for _, cap := range m.Capabilities {
+		if required, ok := requiredPermissions[cap]; ok {
+			for _, needed := range required {
+				if !m.HasPermission(needed) {
+					return fmt.Errorf(
+						"capability %q requires permission %q but it is not declared; "+
+							"add %q to the permissions array", cap, needed, needed,
+					)
+				}
+			}
 		}
 	}
 	if m.TrustLevel != "" && !validTrustLevels[m.TrustLevel] {

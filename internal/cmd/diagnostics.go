@@ -212,7 +212,7 @@ func runDiagnostics(cmd *cobra.Command, args []string) error {
 	// Validate before rendering to catch any internal inconsistencies.
 	if issues := ValidateDiagnosticsOutput(&output); len(issues) > 0 {
 		for _, issue := range issues {
-			fmt.Fprintf(os.Stderr, "Warning: diagnostics inconsistency: %s\n", issue)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: diagnostics inconsistency: %s\n", issue)
 		}
 	}
 
@@ -330,6 +330,9 @@ func computeOverallHealth(out *DiagnosticsOutput) string {
 	}
 	return "Healthy"
 }
+
+// printDiagnosticsDashboard renders a human-readable diagnostics dashboard to w.
+func printDiagnosticsDashboard(w io.Writer, out DiagnosticsOutput) {
 	fmt.Fprintln(w, "╔═══════════════════════════════════════════════════════════════╗")
 	fmt.Fprintln(w, "║                    GLASSBOX DIAGNOSTICS                       ║")
 	fmt.Fprintln(w, "╚═══════════════════════════════════════════════════════════════╝")

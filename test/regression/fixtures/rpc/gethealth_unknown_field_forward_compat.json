@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "healthy",
+    "latestLedger": 1000,
+    "futureField": "some_future_value"
+  },
+  "id": 1
+}

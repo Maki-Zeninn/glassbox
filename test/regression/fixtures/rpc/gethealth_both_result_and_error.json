@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "healthy"
+  },
+  "error": {
+    "code": -32603,
+    "message": "Internal error"
+  },
+  "id": 1
+}

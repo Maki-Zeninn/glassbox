@@ -83,15 +83,12 @@ func WriteCheckpoint(cp *Checkpoint) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("failed to create checkpoint directory: %w", err)
-	}
 	cp.PID = os.Getpid()
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal checkpoint: %w", err)
 	}
-	return os.WriteFile(path, data, 0600)
+	return writeFileAtomic(path, data, 0600)
 }
 
 // ClearCheckpoint removes the crash-recovery checkpoint after a clean session exit.

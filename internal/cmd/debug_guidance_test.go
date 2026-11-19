@@ -393,25 +393,5 @@ func TestDebugPreRunE_PinEndpointMismatch_MessageClear(t *testing.T) {
 
 // resetDebugFlags restores all debug-command package-level flag variables to
 // their defaults so each test starts from a clean state.
-func resetDebugFlags() {
-	networkFlag = "mainnet"
-	compareNetworkFlag = ""
-	rpcURLFlag = ""
-	rpcTokenFlag = ""
-	hotReloadFlag = false
-	wasmPath = ""
-	xdrFileFlag = ""
-	jsonFileFlag = ""
-	watchFlag = false
-	demoMode = false
-	loadSnapshotsFlag = ""
-	liveReplayFlag = false
-	opIndexFlag = -1
-	secureWorkspaceFlag = false
-	pinEndpointFlag = ""
-	traceVerbosityFlag = "normal"
-	themeFlag = ""
-	debugFormatFlag = "text"
-	debugDryRunFlag = false
-	showMetricsFlag = false
-}
+// resetDebugFlags is defined in regression_example_test.go (superset of the
+// fields this file needs reset).

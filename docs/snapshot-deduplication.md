@@ -336,3 +336,13 @@ Potential improvements to the deduplication system:
 - [ ] Diff storage: Store only differences between similar snapshots
 - [ ] Distributed index: Share dedup index across multiple Glassbox instances
 - [ ] Verification: Periodic integrity checks on stored snapshots
+
+---
+
+## Architecture Decision Records
+
+The following ADRs govern the design decisions behind snapshot storage:
+
+- [ADR-004: Data Classification and Cross-Boundary Data Flows](adr/004-data-classification.md) — classifies snapshot / ledger state as `INTERNAL` data, documents that it is stored locally only and not transmitted to external services, and records the atomic write and fingerprint controls at the local persistence boundary (Boundary E).
+- [ADR-007: Offline Guarantees](adr/007-offline-guarantees.md) — documents the offline replay guarantee, the snapshot fingerprint verification on load, and why provenance metadata is excluded from the content hash.
+- [ADR-003: Trust Boundaries and Component Trust Levels](adr/003-trust-boundaries.md) — places the snapshot store in the Tier-0 CLI host process and confirms that no signing credentials are stored in snapshot files.

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,13 +52,11 @@ func NewRunner(simPathOverride string, debug bool) (*Runner, error) {
 		return nil, err
 	}
 
-	if debug {
-		logger.Logger.Debug(
-			"Simulator binary resolved",
-			"path", path,
-			"source", source,
-		)
-	}
+	logger.Logger.Debug(
+		"Simulator binary resolved",
+		"path", path,
+		"source", source,
+	)
 
 	return &Runner{
 		BinaryPath: path,
@@ -140,7 +139,13 @@ func isExecutable(path string) bool {
 		return false
 	}
 	if runtime.GOOS == "windows" {
-		return true // On Windows, if it's a file and we can stat it, assume it's executable for now
+		// On Windows there is no executable-permission bit.  Accept files with
+		// no extension (Unix-style binaries placed on the PATH) or with the
+		// .exe extension.  Any other extension (e.g. .json, .txt) is not an
+		// executable and should be rejected so callers get an actionable error
+		// rather than a cryptic OS "file not found or not executable" message.
+		ext := strings.ToLower(filepath.Ext(path))
+		return ext == "" || ext == ".exe"
 	}
 	return info.Mode()&0111 != 0
 }
@@ -270,47 +275,45 @@ func (r *Runner) Run(ctx context.Context, req *SimulationRequest) (*SimulationRe
 		return nil, errors.WrapMarshalFailed(err)
 	}
 
-	cmd := exec.Command(r.BinaryPath)
-	prepareCommand(cmd)
-	cmd.Stdin = bytes.NewReader(inputBytes)
-	cmd.Env = simulatorEnv()
+	// Create lifecycle manager for this execution
+	lifecycle := NewProcessLifecycle(ProcessConfig{
+		BinaryPath:    r.BinaryPath,
+		Timeout:       30 * time.Second,
+		MaxStderrSize: 1 * 1024 * 1024,
+	})
+	defer lifecycle.Cleanup()
 
-	// Use limited-size buffers to prevent memory growth in daemon mode
-	// Set reasonable limits (10MB stdout, 1MB stderr) for typical simulation responses
+	// Setup command with input
 	stdout := limitedBuffer{Buffer: bytes.Buffer{}, limit: 10 * 1024 * 1024}
-	stderr := limitedBuffer{Buffer: bytes.Buffer{}, limit: 1 * 1024 * 1024}
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
+	
+	if err := lifecycle.Start(ctx, func(cmd *exec.Cmd) {
+		cmd.Stdin = bytes.NewReader(inputBytes)
+		cmd.Env = simulatorEnv()
+		cmd.Stdout = &stdout
+	}); err != nil {
 		return nil, errors.WrapSimCrash(err, "failed to start simulator")
 	}
 
-	if err := r.trackCommand(cmd); err != nil {
-		_ = terminateCommand(cmd, 100*time.Millisecond)
-		_ = cmd.Wait()
+	// Mark as ready immediately (simulator doesn't have separate readiness phase)
+	if err := lifecycle.MarkRunning(); err != nil {
+		logger.Logger.Error("Failed to mark process as running", "error", err)
+		lifecycle.Cleanup()
 		return nil, err
 	}
-	defer r.untrackCommand(cmd)
 
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-waitCh:
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			logger.Logger.Error("Simulator execution failed", "error", err, "stderr", stderr.String())
-			return nil, errors.WrapSimCrash(err, stderr.String())
+	// Wait for process completion
+	if err := lifecycle.Wait(); err != nil {
+		if ctx.Err() != nil {
+			// Context cancellation - process was terminated
+			return nil, ctx.Err()
 		}
-	case <-ctx.Done():
-		_ = r.terminateProcessGroup(cmd, 1500*time.Millisecond)
-		<-waitCh
-		return nil, ctx.Err()
+		// Process failed - translate exit code to actionable error
+		translatedErr := lifecycle.TranslateExitCode()
+		logger.Logger.Error("Simulator execution failed",
+			"error", translatedErr,
+			"stderr", lifecycle.GetStderr(),
+		)
+		return nil, translatedErr
 	}
 
 	var resp SimulationResponse
@@ -358,8 +361,7 @@ type limitedBuffer struct {
 
 func (lb *limitedBuffer) Write(p []byte) (n int, err error) {
 	if lb.Len()+len(p) > lb.limit {
-		// Buffer would exceed limit, discard the data
-		return len(p), nil
+		return 0, fmt.Errorf("simulator output exceeded %d-byte limit", lb.limit)
 	}
 	return lb.Buffer.Write(p)
 }

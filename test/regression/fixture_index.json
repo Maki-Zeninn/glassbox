@@ -1,0 +1,64 @@
+{
+  "_comment": "Auto-generated catalogue of regression test fixtures. Regenerate with: scripts/index_regression_fixtures.sh",
+  "generated_by": "scripts/index_regression_fixtures.sh",
+  "fixture_count": 8,
+  "layers": ["rpc", "replay", "trace", "session", "audit", "cli"],
+  "fixtures": [
+    {
+      "path": "fixtures/rpc/rpc_gettransaction_notfound_issue150.json",
+      "layer": "rpc",
+      "failure_class": "rpc-not-found-masquerade",
+      "issue_ref": "150",
+      "test_name": "TestRegression_Guide_RPC_NotFound_MasqueradesAsConnectivity"
+    },
+    {
+      "path": "fixtures/rpc/rpc_sendtransaction_internal_error_pr_offline.json",
+      "layer": "rpc",
+      "failure_class": "rpc-error-normalization",
+      "issue_ref": "offline",
+      "test_name": "TestRegression_RPC_SendTransaction_InternalError_NormalizedOffline"
+    },
+    {
+      "path": "fixtures/replay/replay_budget_exhausted_issue319.registry.json",
+      "layer": "replay",
+      "failure_class": "budget-exhaustion-silent",
+      "issue_ref": "319",
+      "test_name": "TestRegression_Guide_Replay_BudgetExhaustion_SilentlySwallowed"
+    },
+    {
+      "path": "fixtures/trace/trace_empty_steps_pr319.trace.json",
+      "layer": "trace",
+      "failure_class": "empty-trace-silent-export",
+      "issue_ref": "319",
+      "test_name": "TestRegression_Trace_EmptyExport_ReturnsError"
+    },
+    {
+      "path": "fixtures/session/session_missing_txhash_issue230.session.json",
+      "layer": "session",
+      "failure_class": "missing-field-raw-error",
+      "issue_ref": "230",
+      "test_name": "TestRegression_Session_MissingTxHash_ValidationFails"
+    },
+    {
+      "path": "fixtures/audit/audit_empty_payload_rejected.payload.json",
+      "layer": "audit",
+      "failure_class": "empty-payload-signed",
+      "issue_ref": "",
+      "test_name": "TestRegression_Audit_EmptyPayload_Rejected"
+    },
+    {
+      "path": "fixtures/cli/cli_format_yaml_rejected_issue230.env.json",
+      "layer": "cli",
+      "failure_class": "late-validation",
+      "issue_ref": "230",
+      "test_name": "TestRegression_Guide_CLI_InvalidFormat_RejectedAtStartup"
+    },
+    {
+      "path": "fixtures/cli/cli_format_yaml_rejected_issue230.expected.txt",
+      "layer": "cli",
+      "failure_class": "late-validation",
+      "issue_ref": "230",
+      "test_name": "TestRegression_Guide_CLI_InvalidFormat_RejectedAtStartup"
+    }
+  ]
+}

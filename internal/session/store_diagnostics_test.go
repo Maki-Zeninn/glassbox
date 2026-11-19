@@ -141,10 +141,14 @@ func TestRunStoreDiagnostics_DegradedSession_AppearsInReports(t *testing.T) {
 		t.Fatalf("Save healthy session: %v", err)
 	}
 
-	// Save one corrupt session (empty TxHash).
+	// Save one corrupt session (empty TxHash). SavePreservingSchemaVersion is
+	// used here because Save() now rejects a missing TxHash outright; this
+	// simulates a session that was already corrupt on disk (e.g. written by
+	// an older, less strict version of Glassbox) so RunStoreDiagnostics has
+	// something degraded to detect.
 	corrupt := makeValidSessionData(t, 1)
 	corrupt.TxHash = "" // integrity violation
-	if err := store.Save(ctx, corrupt); err != nil {
+	if err := store.SavePreservingSchemaVersion(ctx, corrupt); err != nil {
 		t.Fatalf("Save corrupt session: %v", err)
 	}
 
@@ -195,8 +199,8 @@ func TestRunStoreDiagnostics_Summary_MentionsDegraded(t *testing.T) {
 
 	ctx := context.Background()
 	corrupt := makeValidSessionData(t, 0)
-	corrupt.Network = "devnet" // invalid
-	if err := store.Save(ctx, corrupt); err != nil {
+	corrupt.Network = "devnet" // invalid — see SavePreservingSchemaVersion note above
+	if err := store.SavePreservingSchemaVersion(ctx, corrupt); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 

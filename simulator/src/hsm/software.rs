@@ -5,6 +5,7 @@
 
 use super::{PublicKey, Signature, Signer, SignerError, SignerInfo, SoftwareSignerConfig};
 use async_trait::async_trait;
+use crate::deterministic::global_seed;
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use ed25519_dalek::{Signer as EdSigner, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -159,8 +160,20 @@ impl Secp256k1SoftwareSigner {
 
     /// Generate a new random key pair and return the signer
     pub fn generate() -> Result<(Self, String), SignerError> {
-        let mut csprng = rand::rngs::OsRng;
-        let signing_key = k256::ecdsa::SigningKey::random(&mut csprng);
+        // Use deterministic seed if available, otherwise fall back to OsRng
+        let signing_key = if global_seed().is_enabled() {
+            if let Some(seed) = global_seed().seed() {
+                k256::ecdsa::SigningKey::from_slice(&seed).map_err(|_| {
+                    SignerError::Crypto("Failed to create signing key from deterministic seed".to_string())
+                })?
+            } else {
+                let mut csprng = rand::rngs::OsRng;
+                k256::ecdsa::SigningKey::random(&mut csprng)
+            }
+        } else {
+            let mut csprng = rand::rngs::OsRng;
+            k256::ecdsa::SigningKey::random(&mut csprng)
+        };
 
         use k256::pkcs8::EncodePrivateKey;
         let pem_data = signing_key

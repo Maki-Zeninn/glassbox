@@ -30,6 +30,12 @@ type ContractEvent struct {
 	Name string `json:"name,omitempty"`
 	// Decoded contains schema-named event fields for audit and trace output.
 	Decoded map[string]interface{} `json:"decoded,omitempty"`
+	// SequenceID is a monotonically increasing identifier assigned at collection time
+	// to preserve event order across serialization, filtering, and merging operations.
+	SequenceID uint64 `json:"sequence_id,omitempty"`
+	// ParentSequenceID tracks the parent event for nested call relationships.
+	// Zero indicates no parent (top-level event).
+	ParentSequenceID uint64 `json:"parent_sequence_id,omitempty"`
 }
 
 // rawEventEnvelope is used to attempt JSON parsing of an event string.
@@ -217,15 +223,18 @@ func DecodeContractEventsWithSchemas(raws []string, schemas *EventSchemaSet) []*
 }
 
 // DecodeDiagnosticEventsWithSchemas converts structured diagnostic events to
-// decoded contract events and applies schemas.
+// decoded contract events and applies schemas. Preserves sequence IDs and parent
+// relationships from the source events for deterministic ordering.
 func DecodeDiagnosticEventsWithSchemas(events []DiagnosticEvent, schemas *EventSchemaSet) []*ContractEvent {
 	out := make([]*ContractEvent, 0, len(events))
 	for _, de := range events {
 		ev := &ContractEvent{
-			Topics:    de.Topics,
-			Data:      de.Data,
-			Type:      de.EventType,
-			TraceStep: -1,
+			Topics:           de.Topics,
+			Data:             de.Data,
+			Type:             de.EventType,
+			TraceStep:        -1,
+			SequenceID:       de.SequenceID,
+			ParentSequenceID: de.ParentSequenceID,
 		}
 		if de.ContractID != nil {
 			ev.ContractID = *de.ContractID
@@ -389,13 +398,6 @@ func buildCallStack(trace *ExecutionTrace, step int) []string {
 		stack = stack[len(stack)-8:]
 	}
 	return stack
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // AttachEventsToNode walks the trace node tree and attaches decoded events to

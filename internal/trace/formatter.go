@@ -166,7 +166,18 @@ func renderNode(b *strings.Builder, n *TraceNode, depth, lw, iw int, isLast bool
 		if n.SourceRef.Column > 0 {
 			loc = fmt.Sprintf("%s:%d:%d", n.SourceRef.File, n.SourceRef.Line, n.SourceRef.Column)
 		}
+		// Append the origin label for non-user frames so generated and
+		// external paths are immediately distinguishable from user source.
+		if label := sourceRefOriginLabel(n.SourceRef.OriginClass); label != "" {
+			loc = loc + "  " + label
+		}
 		writeMetaLine(b, cont, "source", loc, textWidth)
+
+		// Add confidence information if available
+		if n.SourceRef.Confidence != nil {
+			confidenceStr := fmt.Sprintf("%s (%s)", n.SourceRef.Confidence.Level, n.SourceRef.Confidence.Reason)
+			writeMetaLine(b, cont, "confidence", confidenceStr, textWidth)
+		}
 	}
 	if n.Cost != nil {
 		writeMetaLine(b, cont, "cost", FormatCostAnnotation(n.Cost), textWidth)
@@ -344,5 +355,27 @@ func writeMetaLine(b *strings.Builder, prefix, key, value string, textWidth int)
 		} else {
 			b.WriteString(valCont + line + "\n")
 		}
+	}
+}
+
+// sourceRefOriginLabel returns the display label for a SourceRef.OriginClass
+// value so formatters can annotate generated and external frames without
+// importing the sourcemap package (which would create an import cycle).
+//
+// Rules:
+//   "generated" → "[generated]"
+//   "external"  → "[external]"
+//   "unknown"   → "[unknown origin]"
+//   "user" / "" → ""   (no label — user source is the expected happy path)
+func sourceRefOriginLabel(class string) string {
+	switch class {
+	case "generated":
+		return "[generated]"
+	case "external":
+		return "[external]"
+	case "unknown":
+		return "[unknown origin]"
+	default:
+		return "" // "user" and empty string produce no decoration
 	}
 }

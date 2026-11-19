@@ -4,7 +4,9 @@
 package bindings
 
 import (
+	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -154,6 +156,9 @@ func (g *Generator) Generate() ([]GeneratedFile, error) {
 		return nil, fmt.Errorf("no spec source provided: supply either WasmBytes or SpecBytes")
 	}
 
+	// Sort spec entries for deterministic output
+	g.sortSpec()
+
 	// Compute and store artifact metadata so that generateXxx() helpers can
 	// prepend the header to each file.
 	if g.shouldEmbedMetadata() {
@@ -170,13 +175,13 @@ func (g *Generator) Generate() ([]GeneratedFile, error) {
 	}
 
 	files := []GeneratedFile{
-		{Path: "types.ts", Content: g.generateTypes()},
-		{Path: "metadata.ts", Content: g.generateMetadata()},
-		{Path: "client.ts", Content: g.generateClient()},
-		{Path: "Glassbox-integration.ts", Content: g.generateErstIntegration()},
-		{Path: "index.ts", Content: g.generateIndex()},
-		{Path: "package.json", Content: g.generatePackageJSON()},
-		{Path: "README.md", Content: g.generateReadme()},
+		{Path: "types.ts", Content: normalizeLineEndings(g.generateTypes())},
+		{Path: "metadata.ts", Content: normalizeLineEndings(g.generateMetadata())},
+		{Path: "client.ts", Content: normalizeLineEndings(g.generateClient())},
+		{Path: "Glassbox-integration.ts", Content: normalizeLineEndings(g.generateErstIntegration())},
+		{Path: "index.ts", Content: normalizeLineEndings(g.generateIndex())},
+		{Path: "package.json", Content: normalizeLineEndings(g.generatePackageJSON())},
+		{Path: "README.md", Content: normalizeLineEndings(g.generateReadme())},
 	}
 	return files, nil
 }
@@ -436,6 +441,8 @@ func (g *Generator) generateMetadata() string {
 	if sourcePath == "" {
 		sourcePath = "<unknown>"
 	}
+	// Normalize path separators for cross-platform consistency
+	sourcePath = strings.ReplaceAll(sourcePath, "\\", "/")
 
 	for idx, fn := range g.spec.Functions {
 		name := string(fn.Name)
@@ -1040,4 +1047,31 @@ func toPascalCase(s string) string {
 		}
 	}
 	return strings.Join(words, "")
+}
+
+// sortSpec sorts all spec slices by name for deterministic output.
+func (g *Generator) sortSpec() {
+	sort.Slice(g.spec.Functions, func(i, j int) bool {
+		return string(g.spec.Functions[i].Name) < string(g.spec.Functions[j].Name)
+	})
+	sort.Slice(g.spec.Structs, func(i, j int) bool {
+		return string(g.spec.Structs[i].Name) < string(g.spec.Structs[j].Name)
+	})
+	sort.Slice(g.spec.Enums, func(i, j int) bool {
+		return string(g.spec.Enums[i].Name) < string(g.spec.Enums[j].Name)
+	})
+	sort.Slice(g.spec.Unions, func(i, j int) bool {
+		return string(g.spec.Unions[i].Name) < string(g.spec.Unions[j].Name)
+	})
+	sort.Slice(g.spec.ErrorEnums, func(i, j int) bool {
+		return string(g.spec.ErrorEnums[i].Name) < string(g.spec.ErrorEnums[j].Name)
+	})
+	sort.Slice(g.spec.Events, func(i, j int) bool {
+		return string(g.spec.Events[i].Name) < string(g.spec.Events[j].Name)
+	})
+}
+
+// normalizeLineEndings converts all line endings to LF (\n) for cross-platform consistency.
+func normalizeLineEndings(content string) string {
+	return strings.ReplaceAll(content, "\r\n", "\n")
 }

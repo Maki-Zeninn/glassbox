@@ -20,7 +20,7 @@ type PathValidationError struct {
 }
 
 func (e *PathValidationError) Error() string {
-	return fmt.Sprintf("invalid path %q: %s\n  Fix: %s", e.Path, e.Reason, e.FixHint)
+	return fmt.Sprintf("invalid path %q: %s", e.Path, e.Reason)
 }
 
 // Normalize converts sep to the OS-native separator and cleans the path.
@@ -115,7 +115,7 @@ func ValidateSourcePath(path string) error {
 	if strings.Contains(cleaned, "..") {
 		return &PathValidationError{
 			Path:    path,
-			Reason:  "path contains directory traversal (..)",
+			Reason:  "path resolves above its starting directory (contains .. after normalisation)",
 			FixHint: "use a relative path within the project or an absolute path without traversal",
 		}
 	}
@@ -131,8 +131,8 @@ func ValidateSourcePath(path string) error {
 	return nil
 }
 
-// IsPathSafe performs a comprehensive safety check on a file path.
-// It returns true if the path is safe to use in source mapping operations.
+// IsPathSafe returns true if path passes all validation checks.
+// Call ValidateSourcePath directly to retrieve the reason for failure.
 func IsPathSafe(path string) bool {
 	return ValidateSourcePath(path) == nil
 }

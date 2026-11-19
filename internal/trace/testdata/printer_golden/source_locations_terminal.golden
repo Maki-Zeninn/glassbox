@@ -1,0 +1,12 @@
+
+ Transaction Execution Trace
+ Hash  : 5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+ Start : 2026-01-01T00:00:00Z
+ Steps : 2
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▸ TX  5c0a1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab
+├─ [0] ◆ CONTRACT_CALL  mint  CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+└─ [1] ◆ CONTRACT_CALL  balance  CTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Steps: 2  │  Errors: 0
+

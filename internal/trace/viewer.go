@@ -5,6 +5,7 @@ package trace
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,6 +42,14 @@ type InteractiveViewer struct {
 	fetchDelay  time.Duration
 	// search holds all search/filter state and persists across commands.
 	search *SearchState
+	// stateFP is the trace fingerprint used to key persisted viewer state.
+	// Computed once at construction; the fingerprinted fields never change
+	// during a viewing session.
+	stateFP string
+	// refreshHandler wires incremental trace refresh into the viewer.
+	// It is nil until AttachRefreshHandler is called; the 'refresh' command
+	// is silently unavailable when it is nil.
+	refreshHandler *ViewerRefreshHandler
 }
 
 type fetchedState struct {
@@ -62,6 +71,7 @@ func NewInteractiveViewer(trace *ExecutionTrace) *InteractiveViewer {
 		fetchErr:    make(map[int]string),
 		fetchCh:     make(chan fetchedState, 32),
 		search:      NewSearchState(),
+		stateFP:     trace.Fingerprint(),
 	}
 
 	// Index all trace nodes for search.
@@ -87,6 +97,7 @@ func NewInteractiveViewerWithWASM(trace *ExecutionTrace, wasmData []byte) *Inter
 		fetchErr:    make(map[int]string),
 		fetchCh:     make(chan fetchedState, 32),
 		search:      NewSearchState(),
+		stateFP:     trace.Fingerprint(),
 	}
 
 	// Index all trace nodes for search.
@@ -107,14 +118,24 @@ func NewInteractiveViewerWithWASM(trace *ExecutionTrace, wasmData []byte) *Inter
 	return viewer
 }
 
+// AttachRefreshHandler registers a ViewerRefreshHandler with the viewer,
+// enabling the 'refresh' and 'refresh-status' interactive commands.
+// Call this after constructing the viewer and before calling Start.
+func (v *InteractiveViewer) AttachRefreshHandler(h *ViewerRefreshHandler) {
+	v.refreshHandler = h
+}
+
 // Start begins the interactive trace viewing session.
 // It installs a terminal-resize handler so that long contract IDs and XDR
 // strings reflow correctly whenever the window size changes.
 func (v *InteractiveViewer) Start() error {
 	defer v.saveViewerState()
 	termW := getTermWidth()
-	// Attempt to restore persisted viewer state for this transaction.
-	if st, ok, err := session.LoadViewerState(v.trace.TransactionHash); err == nil && ok {
+	// Attempt to restore persisted viewer state for this trace. State is
+	// keyed by content fingerprint, so a re-fetched trace whose steps have
+	// changed simply starts fresh instead of applying stale state.
+	restored := false
+	if st, ok, err := session.LoadViewerState(v.stateFP, len(v.trace.States)); err == nil && ok {
 		if st.CurrentStep >= 0 && st.CurrentStep < len(v.trace.States) {
 			_, _ = v.trace.JumpToStep(st.CurrentStep)
 		}
@@ -129,11 +150,16 @@ func (v *InteractiveViewer) Start() error {
 		}
 		v.eventFilter = st.EventFilter
 		v.hideStdLib = st.HideStdLib
+		restored = true
 	}
 	fmt.Printf("%s Glassbox Interactive Trace Viewer\n", visualizer.Symbol("magnify"))
 	fmt.Println(separator(termW))
 	fmt.Printf("Transaction: %s\n", v.trace.TransactionHash)
 	fmt.Printf("Total Steps: %d\n\n", len(v.trace.States))
+	if restored {
+		fmt.Println("Restored viewer state from your previous session (type 'reset' to clear).")
+		fmt.Println()
+	}
 
 	// Show trap info at startup if detected
 	if v.trap != nil {
@@ -295,6 +321,8 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 	case "quit", "exit":
 		fmt.Printf("Goodbye! %s\n", visualizer.Symbol("wave"))
 		return true
+	case "reset":
+		v.resetViewerState(parts[1:])
 	case "rewind":
 		v.rewindToStart()
 	case "y", "yank", "copy":
@@ -303,6 +331,10 @@ func (v *InteractiveViewer) handleCommand(command string) bool {
 		} else {
 			fmt.Println("Usage: yank <a/r> [index]")
 		}
+	case "refresh":
+		v.handleRefreshCommand(parts[1:])
+	case "refresh-status", "rs":
+		v.handleRefreshStatusCommand()
 	default:
 		// Check if the command starts with / — treat as inline search.
 		if strings.HasPrefix(cmdExact, "/") {
@@ -716,19 +748,93 @@ func (v *InteractiveViewer) handleFetchedState(f fetchedState) {
 	delete(v.fetchErr, f.step)
 }
 
-// saveViewerState persists minimal interactive UI state for this trace.
+// saveViewerState persists minimal interactive UI state for this trace,
+// keyed by the trace content fingerprint.
 func (v *InteractiveViewer) saveViewerState() {
-	if v.trace == nil || v.trace.TransactionHash == "" {
+	if v.trace == nil || v.stateFP == "" {
 		return
 	}
 	st := session.ViewerState{
-		CurrentStep:  v.trace.CurrentStep,
-		SearchQuery:  v.search.Query(),
-		CurrentMatch: v.search.CurrentMatchNumber(),
-		EventFilter:  v.eventFilter,
-		HideStdLib:   v.hideStdLib,
+		TxHash:            v.trace.TransactionHash,
+		CurrentStep:       v.trace.CurrentStep,
+		SearchQuery:       v.search.Query(),
+		CurrentMatch:      v.search.CurrentMatchNumber(),
+		EventFilter:       v.eventFilter,
+		HideStdLib:        v.hideStdLib,
+		ExpandedCallFrames: v.expandedSteps(),
+		Viewport: session.ViewerViewport{
+			FirstVisible: v.trace.CurrentStep,
+			LastVisible:  min(v.trace.CurrentStep+10, len(v.trace.States)-1),
+		},
+		Annotations: v.annotationState(),
 	}
-	_ = session.SaveViewerState(v.trace.TransactionHash, st)
+	_ = session.SaveViewerState(v.stateFP, st)
+}
+
+// expandedSteps returns the step indices of currently expanded call frames.
+func (v *InteractiveViewer) expandedSteps() []int {
+	var steps []int
+	for i := range v.trace.States {
+		if v.trace.States[i].HostState != nil && len(v.trace.States[i].HostState) > 0 {
+			steps = append(steps, i)
+		}
+	}
+	return steps
+}
+
+// annotationState returns the current annotation panel visibility state.
+func (v *InteractiveViewer) annotationState() map[string][]string {
+	m := make(map[string][]string)
+	for i := range v.trace.States {
+		s := &v.trace.States[i]
+		var panels []string
+		if len(s.HostState) > 0 {
+			panels = append(panels, "host_state")
+		}
+		if len(s.Memory) > 0 {
+			panels = append(panels, "memory")
+		}
+		if s.Cost != nil {
+			panels = append(panels, "cost")
+		}
+		if len(panels) > 0 {
+			m[fmt.Sprintf("%d", i)] = panels
+		}
+	}
+	return m
+}
+
+// resetViewerState deletes persisted viewer state. With no argument it clears
+// the sidecar for the current trace and restores in-session defaults; with
+// "all" it clears every persisted viewer state record.
+func (v *InteractiveViewer) resetViewerState(args []string) {
+	if len(args) > 0 && strings.EqualFold(args[0], "all") {
+		n, err := session.ResetAllViewerState()
+		if err != nil {
+			fmt.Printf("%s Failed to reset viewer state: %v\n", visualizer.Error(), err)
+			return
+		}
+		fmt.Printf("Cleared %d persisted viewer state record(s).\n", n)
+		return
+	}
+
+	existed, err := session.ResetViewerState(v.stateFP)
+	if err != nil {
+		fmt.Printf("%s Failed to reset viewer state: %v\n", visualizer.Error(), err)
+		return
+	}
+	// Restore in-session defaults so the reset takes effect immediately.
+	v.search.ClearSearch()
+	v.eventFilter = ""
+	v.hideStdLib = false
+	if len(v.trace.States) > 0 {
+		_, _ = v.trace.JumpToStep(0)
+	}
+	if existed {
+		fmt.Println("Viewer state reset: persisted state cleared and defaults restored.")
+	} else {
+		fmt.Println("Viewer state reset: no persisted state found; defaults restored.")
+	}
 }
 
 func (v *InteractiveViewer) statusBarLine(state *ExecutionState) string {
@@ -1186,6 +1292,9 @@ func (v *InteractiveViewer) showHelp() {
 	fmt.Println("  sp, split            - Open expanded split pane")
 	fmt.Println("  ?, h, help           - Show this help")
 	fmt.Println("  y, yank <a/r> [idx]  - Copy raw XDR")
+	fmt.Println("  reset [all]          - Clear persisted viewer state (this trace, or all traces)")
+	fmt.Println("  refresh <snapshot>   - Incremental refresh: reload only affected steps from updated snapshot")
+	fmt.Println("  refresh-status, rs   - Show last refresh time and auto-refresh status")
 	fmt.Println("  q, quit, exit        - Exit viewer")
 }
 
@@ -1239,4 +1348,46 @@ func (v *InteractiveViewer) handleYank(args []string) {
 	}
 
 	fmt.Printf("%s Copied raw XDR to clipboard\n", visualizer.Symbol("sparkles"))
+}
+
+// handleRefreshCommand processes the 'refresh <snapshot-path>' command.
+// It delegates to the attached ViewerRefreshHandler, which runs incremental
+// change detection and re-simulates only the affected execution steps.
+func (v *InteractiveViewer) handleRefreshCommand(args []string) {
+	if v.refreshHandler == nil {
+		fmt.Printf("%s Incremental refresh is not available in this session.\n"+
+			"  Hint: start Glassbox with a base snapshot to enable refresh.\n",
+			visualizer.Error())
+		return
+	}
+	if len(args) == 0 {
+		fmt.Printf("%s Usage: refresh <path/to/updated_snapshot.json>\n", visualizer.Error())
+		return
+	}
+	ctx := context.Background()
+	if err := v.refreshHandler.HandleRefreshCommand(ctx, args); err != nil {
+		fmt.Printf("%s Refresh failed: %v\n", visualizer.Error(), err)
+		return
+	}
+	// Re-display current state so the user sees the updated trace immediately.
+	v.displayCurrentState()
+}
+
+// handleRefreshStatusCommand prints the current refresh handler status.
+func (v *InteractiveViewer) handleRefreshStatusCommand() {
+	if v.refreshHandler == nil {
+		fmt.Println("Incremental refresh is not configured for this session.")
+		return
+	}
+	status := v.refreshHandler.GetRefreshStatus()
+	termW := getTermWidth()
+	fmt.Printf("\n%s Refresh Status\n", visualizer.Symbol("sync"))
+	fmt.Println(separator(termW))
+	fmt.Printf("Auto-refresh:   %v\n", status["auto_refresh_enabled"])
+	if last, ok := status["last_refresh_time"].(time.Time); ok && !last.IsZero() {
+		fmt.Printf("Last refresh:   %s (%v ago)\n",
+			last.Format("15:04:05"), status["time_since_refresh"])
+	} else {
+		fmt.Println("Last refresh:   never")
+	}
 }

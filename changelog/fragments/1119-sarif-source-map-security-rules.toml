@@ -1,0 +1,30 @@
+# 1119: SARIF export for source map failures and security warnings
+
+category = "cli"
+pr = 0
+summary = "Add GB1xxx and GB2xxx SARIF rule families for source map failures and deprecated host function warnings"
+details = """
+`internal/sarif` gains two enumerated diagnostic rule families alongside the
+existing hash-derived security rules:
+
+- GB1001 source map offset not found in DWARF debug information (warning)
+- GB1002 DWARF debug sections missing from the WASM binary (error)
+- GB1003 Git repository not detected, so no source links were generated (note)
+- GB2001 deprecated host function call detected (warning)
+- GB2002 host function is allowlisted but unsafe for this contract (error)
+
+Each rule carries a shortDescription, fullDescription, helpUri and default
+severity. Source map failures are reported with a SARIF logicalLocation keyed on
+the WASM instruction offset, because the offset is exactly what failed to
+resolve and no source file can be pointed at. Security warnings use a physical
+location when source mapping succeeded and fall back to the logical offset when
+it did not.
+
+`internal/security` now owns the Soroban host function allow/deny lists, which
+previously lived as a package-private variable in `internal/cmd` and so could
+only be reported by `glassbox debug`.
+"""
+breaking = false
+migration_note = ""
+affects = ["json-output", "go-api"]
+compatibility = "beta"

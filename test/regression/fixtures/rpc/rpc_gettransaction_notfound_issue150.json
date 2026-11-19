@@ -1,0 +1,12 @@
+{
+  "_comment": "Reproduces issue #150: GetTransaction returns NOT_FOUND but the CLI printed 'connection refused' instead of 'transaction not found'.",
+  "_failure_class": "rpc-not-found-masquerade",
+  "_issue": "150",
+  "_test": "TestRegression_Guide_RPC_NotFound_MasqueradesAsConnectivity",
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32600,
+    "message": "Transaction not found"
+  }
+}

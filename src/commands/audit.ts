@@ -9,7 +9,8 @@ import stringify from "fast-json-stable-stringify";
 import { AuditLogger } from "../audit/AuditLogger";
 import { renderAuditHTML, writeAuditReport } from "../audit/AuditRenderer";
 import { createAuditSigner } from "../audit/signing/factory";
-import { verifyAuditLog } from "../audit/AuditVerifier";
+import { verifyAuditLog, type TrustPolicy, verifyAuditLogDetailed } from "../audit/AuditVerifier";
+import { ExitCode } from "../exit-codes";
 
 // Load env for key/provider configuration
 dotenv.config();
@@ -63,64 +64,68 @@ export function registerAuditCommands(program: Command): void {
       kmsSigningAlgorithm?: string;
       dryRun?: boolean;
     }) => {
+      let trace: unknown;
       try {
-        let trace;
-        try {
-          trace = JSON.parse(opts.payload);
-        } catch (_jsonErr) {
-          console.error('[FAIL] audit signing failed: --payload is not valid JSON.');
-          console.error('       Ensure the value is a valid JSON string, e.g.:');
-          console.error('         --payload (JSON with input, state, events, timestamp fields)');
-          process.exit(1);
-        }
+        trace = JSON.parse(opts.payload);
+      } catch {
+        console.error('[FAIL] audit signing failed: --payload is not valid JSON.');
+        console.error('       Ensure the value is a valid JSON string, e.g.:');
+        console.error('         --payload (JSON with input, state, events, timestamp fields)');
+        process.exit(ExitCode.VALIDATION_ERROR);
+        return;
+      }
 
-        const signer = createAuditSigner({
+      const providerLabel = opts.hsmProvider ?? 'software';
+      let signer: any = null;
+
+      try {
+        signer = createAuditSigner({
           hsmProvider: opts.hsmProvider,
           softwarePrivateKeyPem: opts.softwarePrivateKey ?? process.env.GLASSBOX_AUDIT_PRIVATE_KEY_PEM,
           kmsKeyId: opts.kmsKeyId,
           kmsSigningAlgorithm: opts.kmsSigningAlgorithm,
         });
 
-          const logger = new AuditLogger(signer, providerLabel);
-          const log = await logger.generateLog(trace);
-
-          // Print to stdout so callers can redirect to a file
-          process.stdout.write(JSON.stringify(log, null, 2) + "\n");
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          console.error(`[FAIL] audit signing failed: ${msg}`);
-          process.exit(1);
-        } finally {
-          if (signer && typeof signer.close === "function") {
-            try {
-              await signer.close();
-            } catch (closeError) {
-              const msg =
-                closeError instanceof Error
-                  ? closeError.message
-                  : String(closeError);
-              console.error(`[WARN] audit signing cleanup failed: ${msg}`);
-            }
-          }
+        if (opts.dryRun) {
+          const canonical = stringify(trace);
+          const canonicalHash = createHash('sha256').update(canonical as string).digest('hex');
+          process.stdout.write(JSON.stringify({
+            dry_run: true,
+            signer_provider: providerLabel,
+            canonical_hash: canonicalHash,
+          }, null, 2) + '\n');
+          return;
         }
 
         const logger = new AuditLogger(signer, providerLabel);
-        const log = await logger.generateLog(trace);
-
-        // Print to stdout so callers can redirect to a file
+        const log = await logger.generateLog(trace as import('../audit/AuditLogger').ExecutionTrace);
         process.stdout.write(JSON.stringify(log, null, 2) + '\n');
+
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.error(`[FAIL] audit signing failed: ${msg}`);
         if (msg.includes('schema validation failed')) {
           console.error('       Fix the payload fields listed above and retry.');
           console.error('       Required fields: timestamp (ISO 8601), input (object), state (object), events (array).');
+          process.exit(ExitCode.VALIDATION_ERROR);
         } else if (msg.includes('private key') || msg.includes('GLASSBOX_AUDIT_PRIVATE_KEY_PEM')) {
           console.error('       Set the GLASSBOX_AUDIT_PRIVATE_KEY_PEM environment variable or pass --software-private-key.');
+          process.exit(ExitCode.CONFIGURATION_ERROR);
         } else if (msg.includes('KMS') || msg.includes('kms')) {
           console.error('       Check GLASSBOX_KMS_KEY_ID and AWS_REGION environment variables.');
+          process.exit(ExitCode.CONFIGURATION_ERROR);
+        } else {
+          process.exit(ExitCode.UNKNOWN_ERROR);
         }
-        process.exit(1);
+      } finally {
+        if (signer && typeof signer.close === 'function') {
+          try {
+            await signer.close();
+          } catch (closeError) {
+            const msg = closeError instanceof Error ? closeError.message : String(closeError);
+            console.error(`[WARN] audit signing cleanup failed: ${msg}`);
+          }
+        }
       }
     });
 
@@ -158,12 +163,24 @@ export function registerAuditCommands(program: Command): void {
     .option("--sig <hex>", "Hex-encoded signature")
     .option("--pubkey <pem>", "Public key in PEM format")
     .option("--file <path>", "Path to a complete audit log JSON file")
+    .option("--trust-roots <pathOrPem>", "Path to trust store PEM or root cert PEM string")
+    .option("--allowed-issuers <issuers>", "Comma-separated list of allowed certificate issuers")
+    .option("--check-validity", "Enforce certificate validity window (expiration) checks")
+    .option("--revoked-certs <serialsOrPath>", "Comma-separated list or file path of revoked cert serials")
+    .option("--policy-config <path>", "Path to a JSON file containing trust policy configuration")
+    .option("--json", "Emit complete verification and policy result as JSON")
     .action(
       async (opts: {
         payload?: string;
         sig?: string;
         pubkey?: string;
         file?: string;
+        trustRoots?: string;
+        allowedIssuers?: string;
+        checkValidity?: boolean;
+        revokedCerts?: string;
+        policyConfig?: string;
+        json?: boolean;
       }) => {
         try {
           let auditLog: any;
@@ -180,7 +197,7 @@ export function registerAuditCommands(program: Command): void {
 
             const canonicalString = stringify(auditLog.trace);
             auditLog.hash = createHash("sha256")
-              .update(canonicalString)
+              .update(canonicalString as string)
               .digest("hex");
           } else {
             throw new Error(
@@ -188,9 +205,83 @@ export function registerAuditCommands(program: Command): void {
             );
           }
 
-          const isValid = verifyAuditLog(auditLog);
+          const trustPolicy: TrustPolicy = {};
 
-          if (isValid) {
+          if (opts.policyConfig) {
+            const content = fs.readFileSync(opts.policyConfig, "utf8");
+            Object.assign(trustPolicy, JSON.parse(content));
+          }
+
+          if (opts.trustRoots) {
+            if (fs.existsSync(opts.trustRoots)) {
+              trustPolicy.trustRoots = [fs.readFileSync(opts.trustRoots, "utf8")];
+            } else {
+              trustPolicy.trustRoots = [opts.trustRoots];
+            }
+          }
+
+          if (opts.allowedIssuers) {
+            trustPolicy.allowedIssuers = opts.allowedIssuers.split(",").map((s) => s.trim());
+          }
+
+          if (opts.checkValidity) {
+            trustPolicy.checkValidity = true;
+          }
+
+          if (opts.revokedCerts) {
+            if (fs.existsSync(opts.revokedCerts)) {
+              trustPolicy.revokedCertificates = fs.readFileSync(opts.revokedCerts, "utf8")
+                .split("\n")
+                .map((s) => s.trim())
+                .filter(Boolean);
+            } else {
+              trustPolicy.revokedCertificates = opts.revokedCerts.split(",").map((s) => s.trim());
+            }
+          }
+
+          const hasPolicy = Object.keys(trustPolicy).length > 0;
+          const result = verifyAuditLogDetailed(auditLog, opts.pubkey, hasPolicy ? trustPolicy : undefined);
+
+          if (opts.json) {
+            console.log(JSON.stringify(result, null, 2));
+            if (!result.valid) {
+              process.exit(1);
+            }
+            return;
+          }
+
+          if (result.hash_valid) {
+            console.log("[OK] Hash integrity verified.");
+          } else {
+            console.error("[FAIL] Hash mismatch: payload has been tampered with.");
+          }
+
+          if (result.signature_valid) {
+            console.log("[OK] Signature verified.");
+          } else {
+            console.error("[FAIL] Signature verification failed.");
+          }
+
+          if (result.attestation) {
+            if (result.attestation.chain_valid) {
+              console.log("[OK] Hardware attestation chain verified.");
+            } else {
+              console.error(`[FAIL] Hardware attestation chain invalid: ${result.attestation.issues.join(", ")}`);
+            }
+          }
+
+          if (result.policy) {
+            if (result.policy.valid) {
+              console.log("[OK] Trust policy evaluation passed.");
+            } else {
+              if (result.policy.untrusted_issuers.length > 0) {
+                console.error(`[FAIL] Untrusted issuer(s) identified: ${result.policy.untrusted_issuers.join(", ")}`);
+              }
+              console.error(`[FAIL] Trust policy issues: ${result.policy.issues.join("; ")}`);
+            }
+          }
+
+          if (result.valid) {
             console.log(
               "[OK] Verification successful: Signature and integrity verified.",
             );
@@ -198,13 +289,18 @@ export function registerAuditCommands(program: Command): void {
             console.error(
               "[FAIL] Verification failed: Invalid signature or tampered payload.",
             );
-            process.exit(1);
+            process.exit(ExitCode.SECURITY_ERROR);
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           console.error(`[FAIL] audit verification failed: ${msg}`);
-          process.exit(1);
+          if (msg.includes('You must provide either')) {
+            process.exit(ExitCode.VALIDATION_ERROR);
+          } else {
+            process.exit(ExitCode.UNKNOWN_ERROR);
+          }
         }
       },
     );
 }
+

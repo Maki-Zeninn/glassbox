@@ -5,15 +5,12 @@ package telemetry
 
 import (
 	"math/rand"
-	"sync/atomic"
 )
 
 // Sampler limits event emission for high-frequency telemetry topics.
 // A rate of 1.0 emits every event; 0.1 emits ~10% of events; 0.0 emits none.
 type Sampler struct {
 	rate float64
-	// counter is used for deterministic sampling (every 1/rate-th event).
-	counter atomic.Uint64
 }
 
 // NewSampler returns a Sampler with the given sample rate clamped to [0.0, 1.0].
@@ -36,10 +33,11 @@ func (s *Sampler) ShouldEmit() bool {
 	if s.rate <= 0.0 {
 		return false
 	}
-	return rand.Float64() < s.rate //nolint:gosec // non-cryptographic sampling
+	return rand.Float64() < s.rate //nolint:gosec // sampling does not require cryptographic randomness; math/rand statistical uniformity is sufficient
 }
 
-// Rate returns the configured sample rate.
+// Rate returns the configured sample rate, always in [0.0, 1.0].
+// A rate of 1.0 emits all events; 0.0 emits none.
 func (s *Sampler) Rate() float64 {
 	return s.rate
 }

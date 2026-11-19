@@ -5,6 +5,7 @@ package sourcemap
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 
@@ -69,7 +70,7 @@ func (r *ExternalRepoRegistry) GitHubURL(absFilePath string) (string, error) {
 		if abs != strings.TrimSuffix(m.Prefix, "/") && !strings.HasPrefix(abs, prefix) {
 			continue
 		}
-		owner, repo, err := parseGitHubURL(m.RemoteURL)
+		owner, repo, err := parseGitHubRemote(m.RemoteURL)
 		if err != nil {
 			return "", err
 		}
@@ -80,37 +81,41 @@ func (r *ExternalRepoRegistry) GitHubURL(absFilePath string) (string, error) {
 		if strings.HasPrefix(rel, "../") {
 			return "", fmt.Errorf("file %q is outside external prefix %q", absFilePath, m.Prefix)
 		}
+		if err := validateSourcePath(rel); err != nil {
+			return "", err
+		}
+		// A configured branch is an explicit user override for external trees.
+		// It is retained for backward compatibility, but callers that replay an
+		// artifact should prefer Revision in a repository-local GitLinker.
 		return fmt.Sprintf("https://github.com/%s/%s/blob/%s/%s",
-			owner, repo, m.Branch, rel), nil
+			owner, repo, url.PathEscape(m.Branch), escapeGitHubPath(rel)), nil
 	}
 	return "", fmt.Errorf("no external mapping for %q", absFilePath)
 }
 
 // ResolveGitHubURL tries the workspace GitLinker first, then external mappings.
 func ResolveGitHubURL(startPath, filePath string, external *ExternalRepoRegistry) (string, error) {
-	abs := filePath
-	if !filepath.IsAbs(abs) {
-		if linker, err := NewGitLinker(startPath); err == nil {
-			if url, err := linker.NormalizeSourcePath(filePath); err == nil {
-				return url, nil
-			}
-		}
-		if external != nil {
-			joined := pathutil.Join(startPath, filePath)
-			if url, err := external.GitHubURL(joined); err == nil {
-				return url, nil
-			}
-		}
-		return "", fmt.Errorf("could not resolve GitHub URL for %q", filePath)
-	}
+	url, _, err := ResolveGitHubURLWithProvenance(startPath, filePath, external, RevisionOptions{})
+	return url, err
+}
 
-	if linker, err := NewGitLinker(abs); err == nil {
-		if url, err := linker.GitHubURL(abs); err == nil {
-			return url, nil
-		}
+// ResolveGitHubURLWithProvenance resolves an immutable replay link and the
+// label that must be rendered beside it. It refuses unknown and dirty workspace
+// revisions unless opts.AllowAmbiguous was expressly set.
+func ResolveGitHubURLWithProvenance(startPath, filePath string, external *ExternalRepoRegistry, opts RevisionOptions) (string, RevisionProvenance, error) {
+	abs := filePath
+	if !filepath.IsAbs(abs) { abs = pathutil.Join(startPath, filePath) }
+	if linker, err := NewGitLinkerWithRevision(abs, opts); err == nil {
+		url, linkErr := linker.GitHubURL(abs)
+		if linkErr == nil { return url, linker.Provenance(), nil }
+	} else if root, rootErr := findRepoRoot(abs); rootErr == nil {
+		// Preserve the diagnostic provenance even though a safe URL is refused.
+		provenance, _ := resolveRevision(root, opts)
+		return "", provenance, err
 	}
 	if external != nil {
-		return external.GitHubURL(abs)
+		url, err := external.GitHubURL(abs)
+		if err == nil { return url, RevisionProvenance{Source: "external mapping", Revision: "configured ref"}, nil }
 	}
-	return "", fmt.Errorf("could not resolve GitHub URL for %q", filePath)
+	return "", RevisionProvenance{Source: "unknown"}, fmt.Errorf("could not resolve GitHub URL for %q", filePath)
 }

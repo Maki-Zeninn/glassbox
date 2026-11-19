@@ -1,0 +1,21 @@
+# rust-toolchain.toml
+# Pins the Rust toolchain used for all builds (local and CI).
+# Update this file deliberately — every change should be reviewed and the
+# corresponding CI cache keys regenerated.
+#
+# To update:
+#   1. Choose a new stable release from https://releases.rs/
+#   2. Update 'channel' below.
+#   3. Run: rustup update stable && cargo test
+#   4. Commit together with any Cargo.lock changes.
+#
+# Format reference: https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
+
+[toolchain]
+channel  = "1.86.0"
+profile  = "minimal"
+components = ["rustfmt", "clippy"]
+targets  = [
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+]

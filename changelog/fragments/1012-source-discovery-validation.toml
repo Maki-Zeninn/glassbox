@@ -1,0 +1,61 @@
+[[changes]]
+type = "fix"
+breaking = false
+summary = "Improve source discovery validation and fallback diagnostics"
+issue = 1012
+pull_request = 0
+
+[[changes.detail]]
+text = """
+Source discovery for contract debugging was opaque: unreadable WASM files
+produced no output, bad --contract-source paths silently fell through to stdin
+prompts, and non-interactive environments (CI) would hang on stdin indefinitely.
+
+Implementation:
+
+DiscoverLocalSymbols (internal/sourcemap/discovery.go):
+- Returns *DiscoveryResult{Found, SearchDir, Warnings} instead of a plain map.
+- Validates empty or whitespace-only projectRoot and rejects null bytes.
+- Treats unreadable WASM files and files with bad WASM magic bytes as Warnings
+  rather than hard failures, so partial results are always returned.
+- DiscoverLocalSymbolsLegacy shim added for backward compatibility.
+
+Resolver.Resolve (internal/sourcemap/resolver.go):
+- --contract-source override path is validated before use (empty/whitespace,
+  non-existent directory, file-not-directory, null bytes) so the user gets an
+  actionable error before any simulation work begins (Issue #117).
+- WithNonInteractive() functional option: when set, Resolve returns
+  ErrSourceNotFound instead of blocking on stdin in CI pipelines.
+  The error message lists every stage that was tried and suggests
+  --contract-source or --skip-source-mapping as remedies.
+
+AutoDiscoverLocalSymbols (internal/sourcemap/resolver.go):
+- Validates projectRoot and expectedHash upfront; returns descriptive errors
+  rather than panicking or silently no-op-ing.
+
+debug.go (internal/cmd/debug.go):
+- New validateSourceDiscoveryFlags() covers --contract-source and --source-alias
+  JSON validity for --wasm/--demo/--xdr-file/--json-file early-return paths in
+  PreRunE, which previously skipped the inline validation block.
+
+debug_dry_run.go (internal/cmd/debug_dry_run.go):
+- Source discovery pre-flight entries added with [OK]/[FAIL] format and Fix:
+  hints, matching the style of all other dry-run checks.
+
+errors (internal/errors/errors.go, glassbox_error_code.go):
+- ErrSourceDiscoveryFailed sentinel and ErstSourceDiscoveryFailed error code.
+- WrapSourceDiscoveryFailed(contractID, hint) with stable code and Hint field.
+
+Documentation:
+- docs/source-mapping.md: added --contract-source validation table,
+  non-interactive/CI mode section, path safety null-byte examples, dry-run
+  source discovery section, and hash-mismatch diagnostic wording.
+- docs/debug-command.md: updated --contract-source and --source-alias flag
+  reference, dry-run check list extended to cover source-discovery entries.
+
+Tests (4 new test files, 47 new test functions):
+- internal/sourcemap/discovery_test.go
+- internal/sourcemap/resolver_test.go
+- internal/sourcemap/regression_mock_harness_test.go
+- internal/cmd/debug_source_discovery_test.go
+"""

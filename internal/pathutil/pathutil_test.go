@@ -4,6 +4,7 @@
 package pathutil
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -149,5 +150,21 @@ func TestIsPathSafe(t *testing.T) {
 	}
 	if IsPathSafe("../etc/passwd") {
 		t.Error("expected traversal path to be unsafe")
+	}
+}
+
+func TestValidateSourcePath_ReturnsPathValidationError(t *testing.T) {
+	err := ValidateSourcePath("")
+	if err == nil {
+		t.Fatal("expected error for empty path, got nil")
+	}
+
+	var pve *PathValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *PathValidationError via errors.As, got %T", err)
+	}
+
+	if pve.FixHint == "" {
+		t.Error("expected FixHint to be non-empty on PathValidationError")
 	}
 }

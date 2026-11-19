@@ -1,0 +1,31 @@
+[[changes]]
+type = "fix"
+breaking = false
+summary = "Implement extractLedgerKeysFromXDR using envelope footprint for regression harness"
+issue = 1058
+pull_request = 0
+
+[[changes.detail]]
+text = """
+The regression harness previously had a TODO stub that returned an empty
+ledger-key slice from extractLedgerKeysFromXDR, causing testTransaction to
+fetch zero ledger entries and replay every historic transaction against an
+empty state. This produced false-positive passes for transactions that read
+contract storage.
+
+Fix:
+- extractLedgerKeysFromXDR now calls DecodeEnvelopeXDR (internal/simulator/
+  xdr_decoder.go) and extracts the Soroban footprint (ReadOnly + ReadWrite
+  LedgerKey sets) that the transaction declared.
+- A new collectFootprintKeys helper deduplicates across the two sets and
+  recursively unwraps FeeBump envelopes to their inner V1 transaction.
+- testTransaction now passes EnvelopeXdr (not ResultMetaXdr) to
+  extractLedgerKeysFromXDR — the footprint lives in the envelope extension,
+  not in the result meta.
+- All returned keys are base64-encoded XDR LedgerKey strings ready for
+  rpc.Client.GetLedgerEntries without further transformation.
+
+Non-Soroban V1 transactions (no SorobanTransactionData) return an empty slice
+without error, which is correct — classic operations have no Soroban footprint
+and require no ledger entry pre-loading.
+"""

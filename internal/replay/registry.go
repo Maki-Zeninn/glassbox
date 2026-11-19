@@ -36,7 +36,15 @@ type Entry struct {
 	Snapshot *snapshot.Snapshot `json:"snapshot"`
 	// Checksum is the SHA-256 hex digest of the snapshot's canonical JSON.
 	// It is computed on save and verified on load.
+	// Deprecated: use ContentHash which is produced from canonical JSON and is
+	// reproducible across Go versions and platforms.
 	Checksum string `json:"checksum"`
+	// ContentHash is the SHA-256 hex digest of the canonical JSON encoding of
+	// the entry's (timestamp, snapshot) pair. Canonical JSON sorts object keys
+	// and omits extra whitespace, making the hash reproducible across
+	// platforms and Go versions. Empty on legacy entries saved before this
+	// field was introduced; back-filled automatically by VerifyIntegrityFull.
+	ContentHash string `json:"content_hash,omitempty"`
 }
 
 // Registry is the top-level container persisted to disk.
@@ -50,7 +58,16 @@ type Registry struct {
 	// TxHash is the Stellar transaction hash this registry belongs to.
 	TxHash string `json:"tx_hash"`
 	// Network is the Stellar network (testnet, mainnet, futurenet).
+	// Deprecated: use NetworkSnapshot for the authoritative network identity.
+	// This field is kept for backwards compatibility with registry files that
+	// pre-date the NetworkSnapshot field.
 	Network string `json:"network"`
+	// NetworkSnapshot is the canonical, serialised network configuration
+	// captured when this registry was created. It is used by
+	// ValidateNetworkSnapshot to detect configuration drift between capture
+	// and replay, and is nil for registry files created before this field was
+	// introduced (legacy files pass validation unconditionally).
+	NetworkSnapshot *NetworkSnapshot `json:"network_snapshot,omitempty"`
 	// EnvelopeXdr is the base64-encoded transaction envelope XDR.
 	EnvelopeXdr string `json:"envelope_xdr"`
 	// ResultMetaXdr is the base64-encoded transaction result meta XDR.
@@ -63,6 +80,10 @@ type Registry struct {
 }
 
 // New creates an empty Registry with the supplied metadata.
+// snap is the canonical network configuration at capture time; it is stored
+// in the NetworkSnapshot field for pre-replay compatibility checks. When snap
+// is nil (e.g. for legacy callers that have not been updated) the legacy
+// Network string is still populated from network for backwards compatibility.
 func New(glassboxVersion, txHash, network, envelopeXdr, resultMetaXdr string) *Registry {
 	return &Registry{
 		SchemaVersion:   SchemaVersion,
@@ -76,16 +97,36 @@ func New(glassboxVersion, txHash, network, envelopeXdr, resultMetaXdr string) *R
 	}
 }
 
+// NewWithNetworkSnapshot creates a Registry and captures the full network
+// configuration in NetworkSnapshot for pre-replay validation. Use this
+// constructor for all new registries; New is kept for backwards compatibility.
+func NewWithNetworkSnapshot(glassboxVersion, txHash, envelopeXdr, resultMetaXdr string, netSnap *NetworkSnapshot) *Registry {
+	network := ""
+	if netSnap != nil {
+		network = netSnap.Name
+	}
+	r := New(glassboxVersion, txHash, network, envelopeXdr, resultMetaXdr)
+	r.NetworkSnapshot = netSnap
+	return r
+}
+
 // Add appends a snapshot captured at the given timestamp.
-// The entry checksum is computed immediately so it is always consistent with
-// the snapshot content at the time of insertion.
+// Both the legacy Checksum (raw-JSON SHA-256) and the new ContentHash
+// (canonical-JSON SHA-256) are computed immediately so every entry is
+// verifiable offline without signing keys.
 func (r *Registry) Add(timestamp int64, snap *snapshot.Snapshot) {
 	checksum := computeSnapshotChecksum(snap)
-	r.Entries = append(r.Entries, Entry{
+	e := Entry{
 		Timestamp: timestamp,
 		Snapshot:  snap,
 		Checksum:  checksum,
-	})
+	}
+	// Compute canonical content hash; ignore error — an empty hash will be
+	// back-filled on the next VerifyIntegrityFull call.
+	if h, err := EntryContentHash(&e); err == nil {
+		e.ContentHash = h
+	}
+	r.Entries = append(r.Entries, e)
 }
 
 // SaveToFile serialises the registry to a JSON file at path.
@@ -149,6 +190,15 @@ func LoadFromFile(path string) (*Registry, error) {
 	if reg.GlassboxVersion == "" {
 		// Back-fill for registries saved before this field was recorded.
 		reg.GlassboxVersion = "unknown"
+	}
+
+	// Back-fill NetworkSnapshot from the legacy Network string for registries
+	// that pre-date the NetworkSnapshot field. The back-filled snapshot has only
+	// a Name (no passphrase/protocol), so ValidateNetworkSnapshot will accept
+	// any passphrase for these legacy files — the name field alone guards against
+	// the most common cross-network mistake (replaying mainnet on testnet).
+	if reg.NetworkSnapshot == nil && reg.Network != "" {
+		reg.NetworkSnapshot = &NetworkSnapshot{Name: reg.Network}
 	}
 
 	return &reg, nil

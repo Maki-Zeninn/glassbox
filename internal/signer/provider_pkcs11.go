@@ -131,14 +131,14 @@ func (p *PKCS11Provider) Validate(cfg ProviderConfig) error {
 	info, err := os.Stat(module)
 	if err != nil {
 		return &Error{
-			Op:  "pkcs11",
+			Op: "pkcs11",
 			Msg: fmt.Sprintf("PKCS#11 module not found at %q: %v\n"+
 				"  Fix: verify the path is correct for your OS/architecture; run --validate-only for a full preflight report", module, err),
 		}
 	}
 	if info.IsDir() {
 		return &Error{
-			Op:  "pkcs11",
+			Op: "pkcs11",
 			Msg: fmt.Sprintf("PKCS#11 module path %q is a directory, not a shared library\n"+
 				"  Fix: provide the full path to the .so/.dylib/.dll file, not its parent directory", module),
 		}
@@ -157,7 +157,7 @@ func (p *PKCS11Provider) Validate(cfg ProviderConfig) error {
 	if keyIDHex != "" {
 		if _, hexErr := hex.DecodeString(keyIDHex); hexErr != nil {
 			return &Error{
-				Op:  "pkcs11",
+				Op: "pkcs11",
 				Msg: fmt.Sprintf("--pkcs11-key-id (or GLASSBOX_PKCS11_KEY_ID) must be a hex-encoded CKA_ID: %v\n"+
 					"  Fix: provide a valid hex string, e.g. 'a1b2c3' (use pkcs11-tool --list-objects to find the CKA_ID)", hexErr),
 			}
@@ -239,10 +239,8 @@ func (p *PKCS11Provider) discoveryHint() string {
 	for _, m := range discovered {
 		paths = append(paths, filepath.ToSlash(m))
 	}
-	sortPaths := func() {
-		sort.Slice(paths, func(i, j int) bool {
-			return strings.ToLower(paths[i]) < strings.ToLower(paths[j])
-		})
-	}
+	sort.Slice(paths, func(i, j int) bool {
+		return strings.ToLower(paths[i]) < strings.ToLower(paths[j])
+	})
 	return "; discovered modules available on this system:\n  " + strings.Join(paths, "\n  ")
 }

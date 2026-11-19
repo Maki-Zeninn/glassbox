@@ -23,6 +23,12 @@ type DiagnosticEvent struct {
 	Topics          []string `json:"topics"`
 	Data            string   `json:"data"`
 	WasmInstruction *string  `json:"wasm_instruction,omitempty"`
+	// SequenceID is a monotonically increasing identifier assigned at collection time
+	// to preserve event order across serialization, filtering, and merging operations.
+	SequenceID uint64 `json:"sequence_id,omitempty"`
+	// ParentSequenceID tracks the parent event for nested call relationships.
+	// Zero indicates no parent (top-level event).
+	ParentSequenceID uint64 `json:"parent_sequence_id,omitempty"`
 }
 
 // BuildTraceNodeTree converts an ExecutionTrace into a TraceNode hierarchy

@@ -40,6 +40,32 @@ Examples:
 
   # Show more context around changes
   Glassbox snapshot-diff --snapshot-a before.json --snapshot-b after.json --context 32`,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if snapshotDiffAFlag == "" {
+			return errors.WrapValidationError(
+				"--snapshot-a is required: provide the path to the first snapshot file\n" +
+					"  Example: glassbox snapshot-diff --snapshot-a before.json --snapshot-b after.json",
+			)
+		}
+		if snapshotDiffBFlag == "" {
+			return errors.WrapValidationError(
+				"--snapshot-b is required: provide the path to the second snapshot file\n" +
+					"  Example: glassbox snapshot-diff --snapshot-a before.json --snapshot-b after.json",
+			)
+		}
+		if err := validateFilePath("snapshot-a", snapshotDiffAFlag); err != nil {
+			return err
+		}
+		if err := validateFilePath("snapshot-b", snapshotDiffBFlag); err != nil {
+			return err
+		}
+		if snapshotDiffContextFlag < 0 {
+			return errors.WrapValidationError(
+				fmt.Sprintf("--context must be >= 0 (got %d)", snapshotDiffContextFlag),
+			)
+		}
+		return nil
+	},
 	RunE: runSnapshotDiff,
 }
 
@@ -53,13 +79,6 @@ func init() {
 }
 
 func runSnapshotDiff(cmd *cobra.Command, args []string) error {
-	if snapshotDiffAFlag == "" {
-		return errors.WrapCliArgumentRequired("snapshot-a")
-	}
-	if snapshotDiffBFlag == "" {
-		return errors.WrapCliArgumentRequired("snapshot-b")
-	}
-
 	snapA, err := snapshot.Load(snapshotDiffAFlag)
 	if err != nil {
 		return errors.WrapValidationError(fmt.Sprintf("failed to load snapshot A: %v", err))

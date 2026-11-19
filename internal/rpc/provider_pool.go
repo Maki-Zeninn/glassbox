@@ -75,6 +75,9 @@ type AttemptRecord struct {
 	// HTTPStatusCode is the HTTP status code returned, or 0 if the request
 	// did not reach the server (connection refused, timeout, etc.).
 	HTTPStatusCode int
+	// Cause is the machine-stable classification of why the attempt failed.
+	// It is set by Do() after each failed attempt.
+	Cause FailureCause
 }
 
 // AttemptDiagnostics holds the full trace of provider attempts made during
@@ -417,6 +420,7 @@ func (p *ProviderPool) Do(
 		// Classify the error.
 		retryable := isRetryableError(err) || (code > 0 && isRetryableStatusCode(code))
 		rec.Retryable = retryable
+		rec.Cause = ClassifyFailureCause(err, code)
 		diag.Attempts = append(diag.Attempts, rec)
 
 		p.RecordFailure(candidate.URL)

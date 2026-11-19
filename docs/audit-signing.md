@@ -184,13 +184,106 @@ message instead of a low-level error mid-signing:
 
 ### Preflight (`--validate-only`)
 
-`--validate-only` runs the full PKCS#11 preflight — module path, module load,
-slot enumeration, token info, session open, PIN auth, key lookup, and a
-test-sign — and prints a `[PASS]`/`[FAIL]` report **without signing**. It works
-with the provider selected by `--signing-provider pkcs11` (or the deprecated
-`--hsm-provider pkcs11`, or the environment), and honors the `--pkcs11-*` flags
-in addition to the environment variables. Each failed step includes a
-remediation hint; the command exits non-zero if any check fails.
+`--validate-only` checks a PKCS#11 signing configuration and exits. **It never
+signs a user payload.** Any `--payload` or `--payload-file` you pass is not read
+and no signed audit log is written. The only signing operation is the internal
+`sign_test` step, which signs a fixed built-in test vector
+(`glassbox-pkcs11-preflight-test-vector`) and discards the result.
+`--validate-only` takes precedence over `--plan`.
+
+#### Required and optional settings
+
+Preflight runs only for the pkcs11 provider. Select it with
+`--signing-provider pkcs11`, the deprecated `--hsm-provider pkcs11`, or
+`GLASSBOX_SIGNING_PROVIDER=pkcs11`. With any other provider the command stops
+with `--validate-only applies only to the pkcs11 provider`.
+
+A passing report also requires three settings. Each can be a flag or its
+environment variable, and the flag wins when both are set. You need the module
+path (`--pkcs11-module` / `GLASSBOX_PKCS11_MODULE`), the user PIN
+(`--pkcs11-pin` / `GLASSBOX_PKCS11_PIN`), and one key selector: either the key
+label (`--pkcs11-key-label` / `GLASSBOX_PKCS11_KEY_LABEL`) or the hex key ID
+(`--pkcs11-key-id` / `GLASSBOX_PKCS11_KEY_ID`). Unlike a real signing run,
+preflight does not reject a missing value up front. It runs the steps and
+reports the missing value as a `[FAIL]` at the step that needs it.
+
+Two settings are optional and only affect slot selection. Use
+`--pkcs11-token-label` / `GLASSBOX_PKCS11_TOKEN_LABEL` to pick the token by
+label, or `GLASSBOX_PKCS11_SLOT` to pick a slot index; the default index is
+`0`. When a token label is set, it is used instead of the slot index. An
+invalid `GLASSBOX_PKCS11_SLOT` (non-numeric or negative) is rejected before
+preflight starts.
+
+Some signing-time input checks are **not** part of preflight: that
+`--pkcs11-key-id` is valid hex, and that label and ID are not both set. They run
+only when you actually sign.
+
+#### Steps
+
+The steps run in a fixed order, and preflight stops at the first failing step.
+The one exception is `token_info`, which is informational and never fails the
+report.
+
+1. `module_path`: the module path is set and names an existing, accessible
+   file that is not a directory. The file must have an extension the current OS
+   accepts: `.so` or `.dylib` on Linux and macOS, `.dll` on Windows.
+2. `module_load`: the module is loaded and initialized within a 10-second
+   timeout per attempt. A failed attempt is retried twice, 500 ms apart.
+3. `slot_enum`: slots with a token present are listed. The slot is chosen by
+   token label if one is set, otherwise by slot index.
+4. `token_info`: the token label is recorded. If it cannot be read, the step
+   still passes with an "unavailable (non-fatal)" message.
+5. `session_open`: a session is opened on the selected slot.
+6. `pin_auth`: the PIN is set and the token accepts it. Repeated wrong PINs
+   can lock a token, so do not loop preflight with a guessed PIN.
+7. `key_lookup`: a key selector is set and a matching key is found.
+8. `sign_test`: the found key signs the built-in test vector.
+
+Each step prints `[PASS]` or `[FAIL]`. A `[FAIL]` line is followed by a
+`Remediation:` hint. The command exits non-zero unless every step passed, and
+then prints `Result: PKCS#11 configuration is valid and ready for signing.`
+
+#### Limitation in the current build
+
+The step sequence above is what the validator implements and what its unit
+tests exercise, using a mock PKCS#11 backend. The CLI, however, runs preflight
+through the default OS backend. That backend can stat the module file but has
+no native PKCS#11 binding, so it cannot initialize a module. With the CLI as
+built today, `module_path` is the only step that can pass. `module_load` then
+fails after three attempts, and steps 3–8 are never reached. A `module_load`
+failure that mentions `C_Initialize is not available` comes from this
+limitation, not from your HSM configuration.
+
+#### Example
+
+The paths, label, and PIN variable below are placeholders. Supply the PIN from
+your own secret store rather than typing it on the command line, where it can
+end up in shell history.
+
+```bash
+export GLASSBOX_PKCS11_MODULE=/opt/vendor-hsm/lib/libvendor-pkcs11.so
+export GLASSBOX_PKCS11_PIN="$HSM_USER_PIN"
+export GLASSBOX_PKCS11_KEY_LABEL=example-audit-key
+export GLASSBOX_PKCS11_TOKEN_LABEL=example-token   # optional
+
+glassbox audit:sign --signing-provider pkcs11 --validate-only
+```
+
+Output with the current build when the module file exists (long lines wrapped
+here for readability):
+
+```
+Running PKCS#11 preflight checks...
+
+  [PASS] module_path    module file found: /opt/vendor-hsm/lib/libvendor-pkcs11.so (<size> bytes)
+  [FAIL] module_load    failed to load PKCS#11 module after 3 attempt(s): pkcs11: C_Initialize
+                        is not available: the OS PKCS#11 provider requires a cgo binding ...
+                        Remediation: verify the module is a valid PKCS#11 shared library; ...
+```
+
+A full report in which all eight steps pass is shown under
+[Preflight validation](#preflight-validation). It is what the validator
+produces with a backend that can drive the module.
 
 ---
 
@@ -328,8 +421,12 @@ glassbox audit:sign --hsm-provider pkcs11 --validate-only
 
 ## Preflight validation
 
-The `--validate-only` flag runs all PKCS#11 checks without signing any payload.
-It is safe to run repeatedly and does not modify the token.
+The `--validate-only` flag runs the PKCS#11 checks without signing any payload.
+It does not modify the token, but repeated runs with a wrong PIN can lock it.
+The required settings, step order, and current-build limitation are described
+under [Preflight (`--validate-only`)](#preflight---validate-only). The report
+below is what a backend that can drive the module produces when every step
+passes.
 
 ```
 $ glassbox audit:sign --hsm-provider pkcs11 --validate-only
@@ -355,6 +452,105 @@ When a check fails, the output includes a remediation hint:
                         the PIN is incorrect — verify GLASSBOX_PKCS11_PIN is correct;
                         note that repeated failures may lock the token
 ```
+
+---
+
+## Key rotation
+
+Rotation has three separate phases: introduce the new key, confirm verifiers can
+use it, and only then retire the old one. Run them as separate steps. If you
+retire the old key before the new trust configuration has been verified,
+verification can be left with no usable key.
+
+### What the tooling does and does not do
+
+`glassbox audit:keygen --rotate` writes a new key pair under a new `--key-name`
+and prints a reminder to keep the previous public key. It does not move, delete,
+or re-sign anything. It refuses to overwrite existing key files unless you pass
+`--force`, so never combine `--force` with the old key's name.
+
+There is no keyring or trust-policy file. Each signed log embeds the hex
+`public_key` that signed it. `audit:verify --public-key` pins exactly one key
+per invocation, and that pin is your trust configuration (see
+[Integrity and acceptance](./audit-verify-command.md#integrity-and-acceptance)).
+
+You can record a key identifier at signing time with `--key-id`, stored as
+`provenance.key_id`. Be aware that `audit:verify` reports `[FAIL] Provenance`,
+and therefore `INVALID`, for any log whose provenance has `key_id`,
+`signer_identity`, or `previous_signature_hash` but no certificate chain. Pass
+`--key-id` only together with `--cert-chain`. Otherwise, match logs to keys by
+their embedded `public_key`. See
+[Audit chain integrity](./audit-verify-command.md#audit-chain-integrity) for the
+provenance fields.
+
+### Procedure
+
+The names and paths below are placeholders. No key material appears in them.
+
+**1. Introduce the new key.** Generate it under a new name and leave the old pair
+untouched:
+
+```bash
+glassbox audit:keygen --key-name audit-2026-q3 --output-dir /secure/keys --rotate
+```
+
+For PKCS#11, create the new key on the token under a new label instead. Signing
+then selects it with `--pkcs11-key-label`, and you can run
+[`--validate-only`](#preflight---validate-only) to check the configuration.
+
+**2. Publish the new public key.** Distribute the new key's hex form to everyone
+who verifies logs, alongside the old one. Do not withdraw the old public key.
+`audit:verify` takes the 64-hex-character form, which you can derive from the
+SPKI PEM:
+
+```bash
+openssl pkey -pubin -in /secure/keys/audit-2026-q3.public.pem -outform DER \
+  | tail -c 32 | od -An -tx1 | tr -d ' \n'
+```
+
+**3. Confirm the new trust configuration works.** Sign a non-production payload
+with the new key and verify it pinned to the new key. Separately, check that an
+existing log signed by the old key still verifies when pinned to the old key:
+
+```bash
+glassbox audit:sign --payload-file docs/examples/audit-verify/payload.json \
+  --software-private-key /secure/keys/audit-2026-q3.private.pem > /tmp/rotation-check.json
+glassbox audit:verify --audit-log /tmp/rotation-check.json --public-key "$NEW_PUB_HEX"
+glassbox audit:verify --audit-log archive/last-old-key.signed.json --public-key "$OLD_PUB_HEX"
+```
+
+Both commands must report `Result: VALID` before you continue.
+
+**4. Switch signing to the new key.** Point `--software-private-key`,
+`GLASSBOX_AUDIT_PRIVATE_KEY_PEM`, or the PKCS#11 key selector at the new key.
+If you sign with `--cert-chain`, update `--key-id` to the new identifier at the
+same time. Chaining is unaffected by the key
+change. `--previous-signature-hash` refers to the previous log, not the previous
+key, so the first log signed with the new key can link to the last log signed
+with the old one. Like `--key-id`, a chained log needs `--cert-chain` to pass
+the `Provenance` check.
+
+**5. Retire the old private key.** This is a separate, later step, done only
+after steps 3 and 4 have succeeded. Destroy or disable the old private key, or
+delete the old HSM key object. Keep the old **public** key archived and
+available to verifiers.
+
+### Historical verification after rotation
+
+Verifying a log needs only a public key, so retiring the old private key in
+step 5 has no effect on logs it already signed. The `audit:verify` tests
+establish how those logs behave:
+
+| Verification of a log signed by the old key | Result |
+|---|---|
+| No `--public-key` (uses the key embedded in the log) | `VALID` (integrity only) |
+| `--public-key` set to the old key | `VALID` |
+| `--public-key` set to the new key | `INVALID`, `[FAIL] Signature` |
+
+As a result, verifiers who pin keys must pick the key that matches each log.
+Compare the log's embedded `public_key` (or its `provenance.key_id`, when
+present) with your archived public keys to decide which one to pin. Discarding the old public key leaves verifiers with only the embedded
+key, which proves integrity but not that the signer was trusted.
 
 ---
 
@@ -505,3 +701,14 @@ Common signing errors and their meanings:
 | `CKR_KEY_FUNCTION_NOT_PERMITTED` | Key lacks sign permission | Recreate key with `CKA_SIGN=true` |
 | `CKR_SESSION_CLOSED` | Session expired | Reinitialize session |
 | `CKR_DEVICE_REMOVED` | Token unplugged | Reinsert token and retry |
+
+---
+
+## Architecture Decision Records
+
+The following ADRs govern the design decisions behind audit signing:
+
+- [ADR-003: Trust Boundaries and Component Trust Levels](adr/003-trust-boundaries.md) — classifies the signing provider tier (Tier 3) and the controls that govern provider selection.
+- [ADR-006: Provider Isolation](adr/006-provider-isolation.md) — documents the isolation properties of software, PKCS#11, and KMS providers; explains why only the hash digest crosses the provider boundary.
+- [ADR-005: Canonicalization Ownership](adr/005-canonicalization-ownership.md) — specifies the canonical form and hashing algorithm whose output is passed to the signing provider.
+- [ADR-007: Offline Guarantees](adr/007-offline-guarantees.md) — documents which providers work without network access and describes the air-gapped signing pipeline.

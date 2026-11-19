@@ -4,6 +4,7 @@
 package signer
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -243,6 +244,27 @@ func (s *Pkcs11Signer) PublicKey() ([]byte, error) {
 // Algorithm returns "ed25519".
 func (s *Pkcs11Signer) Algorithm() string {
 	return "ed25519"
+}
+
+// KeyOrigin returns non-sensitive metadata about the PKCS#11 signing key.
+// The key fingerprint is derived from the public key bytes if available,
+// otherwise from the configured key label or key ID.
+func (s *Pkcs11Signer) KeyOrigin() KeyOriginMetadata {
+	origin := KeyOriginMetadata{
+		Provider:  "pkcs11",
+		Algorithm: "ed25519",
+	}
+
+	if len(s.pubKey) > 0 {
+		hash := sha256.Sum256(s.pubKey)
+		origin.KeyFingerprint = hex.EncodeToString(hash[:])
+	} else if s.config.KeyLabel != "" {
+		origin.KeyFingerprint = s.config.KeyLabel
+	} else if s.config.KeyIDHex != "" {
+		origin.KeyFingerprint = s.config.KeyIDHex
+	}
+
+	return origin
 }
 
 // Close terminates the PKCS#11 session and finalizes the module. It

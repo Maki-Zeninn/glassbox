@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -123,14 +124,14 @@ For a full Stellar account strkey (56 characters starting with G), Horizon spons
 		fmt.Println("--------------------------------------------------")
 
 		if res.IncompleteScan {
-			printContractSearchIncompleteWarning(res)
+			printContractSearchIncompleteWarning(cmd.ErrOrStderr(), res)
 		}
 		return nil
 	},
 }
 
-func printContractSearchIncompleteWarning(res *rpc.SearchContractsResult) {
-	fmt.Fprintf(os.Stderr, "Warning: contract search stopped after scanning %d contract row(s) from Horizon; additional matches may exist on the network (scan budget ≤ %d rows). Increase --max-pages or set GLASSBOX_CONTRACT_SEARCH_MAX_PAGES.\n",
+func printContractSearchIncompleteWarning(w io.Writer, res *rpc.SearchContractsResult) {
+	fmt.Fprintf(w, "Warning: contract search stopped after scanning %d contract row(s) from Horizon; additional matches may exist on the network (scan budget ≤ %d rows). Increase --max-pages or set GLASSBOX_CONTRACT_SEARCH_MAX_PAGES.\n",
 		res.ScannedRecords, res.MaxScanBudget)
 }
 
